@@ -1,0 +1,19 @@
+{
+  "name": "bearing-bounds",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lower- and upper-bound bearing capacity of shallow foundations by plane-strain limit analysis, in a single browser page.",
+  "scripts": {
+    "build": "python scripts/build.py",
+    "verify": "node tests/verify.js",
+    "verify:std": "node tests/verify.js --std",
+    "e2e": "node tests/e2e.js",
+    "test": "node tests/verify.js && python scripts/build.py && node tests/e2e.js"
+  },
+  "dependencies": {
+    "highs": "1.15.4"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

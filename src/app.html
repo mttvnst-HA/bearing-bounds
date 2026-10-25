@@ -1,0 +1,1426 @@
+<title>Bearing Bounds</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: engineering workbench. Input column on the left, answer, cross-section and detail on the right; stacks below 900 px with a sticky Run bar. */
+:root {
+  --bg: #f3f5f6;
+  --panel: #ffffff;
+  --ink: #18232b;
+  --muted: #56656f;
+  --line: #d6dde1;
+  --line-soft: #e7ecee;
+  --accent: #0f6a8a;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2f0f5;
+  --lb: #2c7a4b;
+  --ub: #b4561d;
+  --warn: #8a5f00;
+  --warn-soft: #fbf1d9;
+  --bad: #b3261e;
+  --bad-soft: #fbe6e4;
+  --good: #2c7a4b;
+  --water: #2f7fc1;
+  --plot-bg: #fbfcfc;
+  --font-display: "Barlow Semi Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11181d; --panel: #18222a; --ink: #e3eaee; --muted: #9aaab4; --line: #2c3a44; --line-soft: #22303a;
+    --accent: #4bb3d6; --accent-ink: #0b1a21; --accent-soft: #173543; --lb: #5cc489; --ub: #ec9257;
+    --warn: #e2b54a; --warn-soft: #2f2812; --bad: #f2867d; --bad-soft: #3a1f1d; --good: #5cc489; --water: #69aee6; --plot-bg: #141d23; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11181d; --panel: #18222a; --ink: #e3eaee; --muted: #9aaab4; --line: #2c3a44; --line-soft: #22303a;
+  --accent: #4bb3d6; --accent-ink: #0b1a21; --accent-soft: #173543; --lb: #5cc489; --ub: #ec9257;
+  --warn: #e2b54a; --warn-soft: #2f2812; --bad: #f2867d; --bad-soft: #3a1f1d; --good: #5cc489; --water: #69aee6; --plot-bg: #141d23; color-scheme: dark;
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 18px 40px;
+}
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 18px; }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+header.top h1 { font-size: 30px; font-weight: 700; letter-spacing: 0.01em; }
+header.top h1 span { color: var(--accent); }
+header.top p { margin: 2px 0 0; color: var(--muted); max-width: 70ch; }
+.units { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel); }
+.units button { border: 0; background: transparent; color: var(--muted); font: 600 13.5px var(--font-display); letter-spacing: 0.06em; padding: 9px 14px; min-height: 38px; cursor: pointer; }
+.units button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.grid { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.inputs { display: grid; }
+.sec { padding: 14px 16px; border-top: 1px solid var(--line-soft); display: grid; gap: 10px; }
+.sec:first-child { border-top: 0; }
+.sec h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.row.three { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+label.f { display: grid; gap: 3px; font-size: 13px; color: var(--muted); min-width: 0; align-content: start; }
+label.f > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+input, select { font: 500 14px var(--font-mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 8px 8px; min-height: 38px; width: 100%; min-width: 0; }
+select { font-family: var(--font-body); }
+input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--bad); background: var(--bad-soft); }
+.ferr { color: var(--bad); font-size: 12.5px; line-height: 1.35; white-space: normal; }
+input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chk { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink); cursor: pointer; min-height: 32px; }
+.chk input { width: 20px; height: 20px; min-height: 0; accent-color: var(--accent); flex: none; margin: 0; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 5px; padding: 7px 11px; min-height: 36px; font: 500 13.5px var(--font-body); cursor: pointer; }
+.seg button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.note { font-size: 12.5px; line-height: 1.4; padding: 7px 9px; border-radius: 5px; background: var(--accent-soft); color: var(--ink); margin: 0; }
+.note.warn { background: var(--warn-soft); }
+details.layer { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+details.layer > summary { list-style: none; display: flex; align-items: center; gap: 9px; padding: 9px 10px; cursor: pointer; min-height: 44px; }
+details.layer > summary::-webkit-details-marker { display: none; }
+details.layer > summary::after { content: ""; margin-left: auto; width: 8px; height: 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); flex: none; transition: transform .15s; }
+details.layer[open] > summary::after { transform: rotate(-135deg); }
+details.layer.bad > summary { box-shadow: inset 3px 0 0 var(--bad); }
+.lname { font-weight: 600; min-width: 0; }
+.lsum { color: var(--muted); font-size: 12.5px; font-family: var(--font-mono); min-width: 0; overflow-wrap: anywhere; }
+.lsumwrap { display: grid; min-width: 0; }
+.lbody { display: grid; gap: 9px; padding: 2px 10px 12px; }
+.swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; border: 1px solid var(--line); }
+.lfoot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.icon-btn { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 5px; padding: 6px 12px; min-height: 34px; cursor: pointer; font: 500 13px var(--font-body); flex: none; }
+.icon-btn:hover { color: var(--bad); border-color: var(--bad); }
+.add { border: 1px dashed var(--line); background: transparent; color: var(--accent); border-radius: 6px; padding: 10px; min-height: 40px; font: 600 13.5px var(--font-body); cursor: pointer; }
+.run { display: grid; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); position: sticky; bottom: 0; background: var(--panel); border-radius: 0 0 8px 8px; z-index: 5; box-shadow: 0 -6px 14px -10px rgba(0,0,0,.35); }
+.runrow { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.btn { border: 0; background: var(--accent); color: var(--accent-ink); font: 700 16px var(--font-display); letter-spacing: 0.05em; padding: 11px 16px; min-height: 44px; border-radius: 6px; cursor: pointer; flex: 1 1 190px; white-space: nowrap; }
+.btn.stop { background: var(--bad); }
+.runverdict { font: 600 13.5px var(--font-display); letter-spacing: .03em; min-width: 0; flex: 1 1 140px; }
+.runverdict.ok { color: var(--good); } .runverdict.warn { color: var(--warn); } .runverdict.bad { color: var(--bad); } .runverdict.idle { color: var(--muted); }
+.hint { font-size: 12.5px; color: var(--muted); margin: 0; }
+.progress { height: 5px; background: var(--line-soft); border-radius: 3px; overflow: hidden; position: relative; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+.progress.busy::after { content: ""; position: absolute; inset: 0; width: 30%; background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity: .55; animation: sweep 1.4s linear infinite; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.status { font-size: 13px; color: var(--muted); min-height: 1.4em; }
+.status.err { color: var(--bad); }
+.right { display: grid; gap: 18px; min-width: 0; }
+.summary { padding: 16px; display: grid; gap: 14px; scroll-margin-top: 12px; }
+.sumhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; }
+.sumhead h2 { font-size: 20px; font-weight: 600; }
+.pill { font: 600 12.5px var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; border: 1px solid currentColor; }
+.pill.ok { color: var(--good); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); } .pill.idle, .pill.run { color: var(--muted); }
+.answer { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.answer .big { font: 600 30px var(--font-mono); font-variant-numeric: tabular-nums; }
+.answer .lab { font: 600 15px var(--font-display); letter-spacing: .03em; }
+.answer .sub { color: var(--muted); font-size: 14px; }
+.stale { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; background: var(--warn-soft); border-radius: 6px; padding: 9px 12px; font-size: 13.5px; }
+.stale button { border: 1px solid var(--warn); color: var(--ink); background: transparent; border-radius: 5px; padding: 6px 12px; min-height: 34px; font: 600 13px var(--font-body); cursor: pointer; }
+.summary.is-stale .dimmable, .summary.is-running .dimmable, .results-dim { opacity: .45; }
+.figs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.fig { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; min-width: 0; }
+.fig.lb { border-color: var(--lb); } .fig.ub { border-color: var(--ub); } .fig.mid { border-color: var(--accent); }
+.fig .k { font: 600 12.5px var(--font-display); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.fig .v { font: 500 22px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fig .u { font: 400 12.5px var(--font-body); color: var(--muted); }
+.rangehead { font: 600 12.5px var(--font-display); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); margin-bottom: -6px; }
+.bar { position: relative; height: 62px; }
+.bar svg { width: 100%; height: 62px; display: block; overflow: visible; }
+.foot { font-size: 12.5px; color: var(--muted); margin: 0; }
+.viewer { display: grid; }
+.tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
+.tabs button { flex: none; border: 0; background: transparent; color: var(--muted); font: 600 14px var(--font-display); letter-spacing: 0.04em; padding: 10px 12px; min-height: 42px; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs button[aria-disabled="true"] { opacity: .45; }
+.canvas-wrap { position: relative; background: var(--plot-bg); }
+canvas { display: block; width: 100%; height: auto; max-width: 100%; }
+.animinfo { display: grid; gap: 6px; padding: 10px 14px 8px; border-bottom: 1px solid var(--line-soft); }
+.animinfo .st { font: 600 15px var(--font-display); letter-spacing: .02em; }
+.animinfo .st.s2 { color: var(--warn); } .animinfo .st.s3 { color: var(--bad); }
+.animinfo .q { font: 500 13px var(--font-mono); color: var(--ink); }
+.animinfo svg { width: 100%; height: 30px; display: block; overflow: visible; }
+.animbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 14px 0; }
+.animbar input[type=range] { flex: 1 1 160px; min-height: 0; padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
+.animbar .icon-btn { color: var(--ink); min-width: 84px; }
+.animbar .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 8px 14px 12px; font-size: 12.5px; color: var(--muted); }
+.ramp { width: 160px; max-width: 40vw; height: 10px; border-radius: 2px; }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 1100px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+.card { padding: 14px 16px; display: grid; gap: 10px; min-width: 0; align-content: start; container-type: inline-size; }
+.card h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line-soft); vertical-align: top; overflow-wrap: anywhere; }
+th { font: 600 12px var(--font-display); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: normal; }
+th.n { text-align: right; }
+th.sym { text-transform: none; font: italic 600 14px var(--font-body); letter-spacing: 0; }
+table.kv td:first-child { width: 52%; color: var(--muted); }
+/* label/value tables wrap instead of scrolling; in a narrow card each value drops under its label */
+@container (max-width: 380px) {
+  table.kv tr { display: grid; grid-template-columns: minmax(0, 1fr); border-bottom: 1px solid var(--line-soft); padding: 5px 0; }
+  table.kv td { border: 0; padding: 1px 2px; width: auto !important; text-align: left; }
+  table.ver thead { display: none; }
+  table.ver tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line-soft); padding: 6px 0; }
+  table.ver td { border: 0; padding: 1px 2px; text-align: left; }
+  table.ver td:first-child { grid-column: 1 / -1; }
+  table.ver td.n::before { content: attr(data-l) " "; color: var(--muted); font-family: var(--font-body); }
+}
+details.more > summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::after { content: "Show"; font: 600 13px var(--font-body); color: var(--accent); }
+details.more[open] > summary::after { content: "Hide"; }
+details.more > .inner { display: grid; gap: 12px; padding-top: 10px; }
+ol.notes { margin: 0; padding-left: 22px; list-style: lower-alpha; display: grid; gap: 6px; font-size: 13.5px; max-width: 75ch; }
+.copy { justify-self: start; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 5px; padding: 8px 14px; min-height: 38px; font: 600 13.5px var(--font-body); cursor: pointer; }
+textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; }
+@media (pointer: coarse) { .seg button, .units button, .icon-btn, .copy { min-height: 44px; } .chk { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .progress i { transition: none; } .progress.busy::after { animation: none; } details.layer > summary::after { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Bearing <span>Bounds</span></h1>
+      <p>Collapse load of shallow foundations bracketed from below and above by plane-strain limit analysis on layered Mohr-Coulomb soil.</p>
+    </div>
+    <div class="units" role="group" aria-label="Unit system">
+      <button type="button" id="u-us" aria-pressed="true">US · ft, psf</button>
+      <button type="button" id="u-si" aria-pressed="false">SI · m, kPa</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <form class="panel inputs" id="form" autocomplete="off" novalidate>
+      <div class="sec">
+        <h2>Foundation</h2>
+        <div class="seg" id="ftype" role="group" aria-label="Foundation type"></div>
+        <div class="row three">
+          <label class="f" id="wrap-B"><span id="lbl-B">Width B</span><input id="B" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f" id="wrap-L"><span id="lbl-L">Length L</span><input id="L" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f" id="wrap-D"><span id="lbl-D">Embedment D</span><input id="D" type="number" step="any" min="0" inputmode="decimal"></label>
+        </div>
+        <label class="chk"><input type="checkbox" id="rough" checked> Rough base (full soil–footing adhesion)</label>
+      </div>
+      <div class="sec">
+        <h2>Loading</h2>
+        <div class="row">
+          <label class="f" id="wrap-P"><span id="lbl-P">Vertical load</span><input id="P" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f" id="wrap-FS"><span>Target factor of safety</span><input id="FS" type="number" step="any" min="1" inputmode="decimal"></label>
+        </div>
+        <p class="note" id="loadNote" role="status" hidden></p>
+        <div class="row">
+          <label class="f" id="wrap-Hl"><span id="lbl-H">Horizontal load H</span><input id="Hl" type="number" step="any" inputmode="decimal"></label>
+          <label class="f" id="wrap-ec"><span id="lbl-e">Eccentricity e</span><input id="ec" type="number" step="any" inputmode="decimal"></label>
+        </div>
+        <p class="hint">H and e act across the width B. Positive values point to the right, toward the slope when there is one. All loads are increased together until collapse.</p>
+        <label class="f" id="wrap-qs"><span id="lbl-q">Ground surcharge beside footing</span><input id="qs" type="number" step="any" min="0" inputmode="decimal"></label>
+      </div>
+      <div class="sec">
+        <h2>Ground</h2>
+        <label class="chk"><input type="checkbox" id="hasSlope"> Slope on the right of the footing</label>
+        <div class="row three" id="slopeRow">
+          <label class="f" id="wrap-sd"><span id="lbl-sd">Edge to crest</span><input id="sd" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f" id="wrap-sh"><span id="lbl-sh">Slope height</span><input id="sh" type="number" step="any" min="0" inputmode="decimal"></label>
+          <label class="f" id="wrap-sa"><span>Slope angle (deg)</span><input id="sa" type="number" step="any" min="5" max="80" inputmode="decimal"></label>
+        </div>
+      </div>
+      <div class="sec">
+        <h2>Soil profile</h2>
+        <div id="layers" style="display:grid;gap:8px"></div>
+        <button type="button" class="add" id="addLayer">Add layer below</button>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="hasWT" checked> Water table</label>
+          <label class="f" id="wrap-wt"><span id="lbl-wt">Depth below ground</span><input id="wt" type="number" step="any" min="0" inputmode="decimal"></label>
+        </div>
+      </div>
+      <div class="sec">
+        <h2>Analysis</h2>
+        <div class="seg" id="quality" role="group" aria-label="Mesh quality"></div>
+        <p class="hint" id="qualityHint"></p>
+        <label class="chk"><input type="checkbox" id="feub"> Always run the finite element upper bound (adds the dissipation view)</label>
+      </div>
+      <div class="run">
+        <div class="runrow">
+          <button type="submit" class="btn" id="go">Run limit analysis</button>
+          <span class="runverdict idle" id="runVerdict"></span>
+        </div>
+        <div class="progress" id="prog"><i id="bar"></i></div>
+        <div class="status" id="status" role="status" aria-live="polite">Loading solver…</div>
+      </div>
+    </form>
+
+    <div class="right" id="results">
+      <section class="panel summary" id="summary" aria-labelledby="sumTitle">
+        <div class="sumhead"><h2 id="sumTitle">Bearing capacity</h2><span class="pill idle" id="verdict">Not yet run</span></div>
+        <div class="stale" id="staleNote" hidden><span>Inputs have changed since this run. The results shown are for the previous inputs.</span><button type="button" id="rerun">Run again</button></div>
+        <p class="answer" id="answer"><span class="sub">Press Run limit analysis to compute the factor of safety. A Quick run takes about 20 to 40 seconds.</span></p>
+        <div class="figs dimmable">
+          <div class="fig mid"><div class="k">Allowable pressure (LB ÷ FS)</div><div class="v" id="fAll">–</div><div class="u" id="uAll"></div></div>
+          <div class="fig"><div class="k">Applied vertical pressure</div><div class="v" id="fApp">–</div><div class="u" id="uApp"></div></div>
+        </div>
+        <div class="rangehead dimmable">Collapse pressure range</div>
+        <div class="figs dimmable">
+          <div class="fig lb"><div class="k">Lower bound (safe)</div><div class="v" id="fLB">–</div><div class="u" id="uLB"></div></div>
+          <div class="fig ub"><div class="k">Upper bound</div><div class="v" id="fUB">–</div><div class="u" id="uUB"></div></div>
+        </div>
+        <div class="bar dimmable"><svg id="barsvg" role="img" aria-label="Collapse pressure range chart"></svg></div>
+        <p class="foot dimmable" id="classicWhy"></p>
+        <p class="foot" id="sumFoot"></p>
+      </section>
+
+      <section class="panel viewer">
+        <div class="tabs" role="tablist" id="tabs" aria-label="Section views"></div>
+        <div class="animinfo" id="animinfo" hidden aria-live="off"><div class="st" id="animStage"></div><div class="q" id="animQ"></div><svg id="animGauge" aria-hidden="true"></svg></div>
+        <div class="canvas-wrap" id="viewpanel" role="tabpanel" tabindex="0"><canvas id="cv" width="900" height="420" role="img" aria-label="Cross-section of the footing and soil"></canvas></div>
+        <div class="animbar" id="animbar" hidden>
+          <button type="button" class="icon-btn" id="animPlay">Pause</button>
+          <input type="range" id="animScrub" min="0" max="1000" value="0" aria-label="Animation position">
+          <span class="hint" id="animLabel"></span>
+        </div>
+        <div class="legend" id="legend"></div>
+      </section>
+
+      <div class="cols">
+        <section class="panel card">
+          <h3>Solution detail</h3>
+          <table id="detail" class="kv"><tbody><tr><td>Run an analysis to see the detail.</td></tr></tbody></table>
+          <button type="button" class="copy" id="copyBtn">Copy summary</button>
+          <textarea class="copytxt" id="copyTxt" hidden readonly aria-label="Summary text"></textarea>
+        </section>
+        <section class="panel card">
+          <h3>Classical comparison</h3>
+          <div id="classic"><p class="hint">Shown after a run.</p></div>
+          <p class="hint" id="classicNote"></p>
+        </section>
+      </div>
+
+      <details class="panel card more" id="methodBox">
+        <summary><h3>Method, limits and verification</h3></summary>
+        <div class="inner">
+        <ol class="notes">
+          <li><b>Lower bound (LB)</b>: finite element limit analysis (FELA) with linear stress triangles and statically admissible stress discontinuities on every edge, an inscribed linearised Mohr-Coulomb yield surface, and a radial fan of elements at the footing edge. The stress field is extended to the infinite half-space beside and below the mesh (zero shear, geostatic vertical stress beside it, uniform horizontal stress below it, with yield checked in every deeper layer), so the result is a rigorous lower bound whatever the mesh size.</li>
+          <li><b>Upper bound (UB)</b>: discontinuity layout optimisation (DLO), which finds the critical translational mechanism among every line joining a grid of nodes. The domain grows until the mechanism is clear of its edges, then a finer grid is fitted to the mechanism. For layered profiles, combined loads or slopes, or when you tick the option, a finite element UB (linear velocity triangles with velocity discontinuities and a circumscribed yield surface) also runs; the lower of the two is reported.</li>
+          <li>Both bounds come from linear programs (LP) solved in your browser with the HiGHS interior-point solver, in a background worker. A solution is accepted only if the solver reports a feasible primal point; otherwise it re-solves with crossover, and if that also fails no bound is reported.</li>
+          <li>The mesh follows every layer boundary, the water table and the slope, so no element straddles two materials.</li>
+          <li>The analysis is in effective stress throughout, using buoyant unit weight below the water table for every layer. For undrained (φ = 0) layers this changes nothing but a uniform shift by the pore pressure. Reported pressures are gross total pressures at the footing base: the effective result plus the pore pressure there, so they compare directly with the applied load.</li>
+          <li><b>Footing and loads</b>: the footing is a rigid body that can settle, slide, rotate and lift off. Its base is a no-tension interface, rough (soil strength) or smooth. Vertical load V, horizontal load H and moment M = V·e are increased together in the proportions you enter until collapse; the factor of safety is the factor on that whole load. When the load is vertical and central on level ground, a symmetric half section is solved; otherwise the full section is solved.</li>
+          <li><b>Slope</b>: a slope on the right of the footing is described by the distance from the footing edge to the crest, its height and its angle, with level ground behind the crest and beyond the toe. The water table must be at or below the toe.</li>
+          <li>Embedment is modelled as a surcharge equal to the overburden at the footing base, so the shear strength of soil above the base is ignored (conservative). The section views hatch that soil.</li>
+          <li>Square, rectangular, circular, mat and slab foundations scale the plane-strain bounds by the ratio of classical bearing capacity with and without Vesić/De Beer shape factors for the soil at the base (using the effective width B − 2e). That adjusted pair is an engineering estimate, not a rigorous bound. H and e act across B only.</li>
+          <li>Self-weight bounds in cohesionless soil converge slowly, so expect a gap of roughly −10 to −17% / +19 to +27% there (see verification). Unsymmetric cases solve the full section and take about twice as long.</li>
+        </ol>
+        <h3>Verification (Standard mesh, strip footing)</h3>
+        <table class="ver">
+          <thead><tr><th>Case</th><th class="n">Reference</th><th class="n">LB ÷ ref.</th><th class="n">UB ÷ ref.</th></tr></thead>
+          <tbody>
+            <tr><td>Undrained, weightless, rough (N<sub>c</sub> = 5.14)</td><td class="n" data-l="Ref.">5.14 s<sub>u</sub></td><td class="n" data-l="LB">0.992</td><td class="n" data-l="UB">1.009</td></tr>
+            <tr><td>c′ = 10, φ′ = 20°, weightless (N<sub>c</sub> = 14.8)</td><td class="n" data-l="Ref.">148.3</td><td class="n" data-l="LB">0.969</td><td class="n" data-l="UB">1.023</td></tr>
+            <tr><td>Surcharge only, φ′ = 30°, smooth (N<sub>q</sub> = 18.4)</td><td class="n" data-l="Ref.">184.0</td><td class="n" data-l="LB">0.884</td><td class="n" data-l="UB">1.026</td></tr>
+            <tr><td>Self-weight, φ′ = 30°, rough (N<sub>γ</sub> = 14.75, Martin)</td><td class="n" data-l="Ref.">265.5</td><td class="n" data-l="LB">0.910</td><td class="n" data-l="UB">1.189</td></tr>
+            <tr><td>Self-weight, φ′ = 40°, rough (N<sub>γ</sub> = 85.6, Martin)</td><td class="n" data-l="Ref.">1541</td><td class="n" data-l="LB">0.833</td><td class="n" data-l="UB">1.266</td></tr>
+            <tr><td>Crust: s<sub>u</sub> 100 to 0.5 m over s<sub>u</sub> 10, B = 2 m, rough (true load ≤ 110.7)</td><td class="n" data-l="Ref.">≤ 110.7</td><td class="n" data-l="LB">0.915</td><td class="n" data-l="UB">1.052</td></tr>
+            <tr><td>Inclined, undrained, H/(B s<sub>u</sub>) = 0.5 (Green 1954, V/(B s<sub>u</sub>) = 4.48)</td><td class="n" data-l="Ref.">448.4</td><td class="n" data-l="LB">0.994</td><td class="n" data-l="UB">1.013</td></tr>
+            <tr><td>Eccentric, undrained, e = 0.1B (Meyerhof effective width, 0.8 × 5.14 s<sub>u</sub>)</td><td class="n" data-l="Ref.">411.4</td><td class="n" data-l="LB">1.006</td><td class="n" data-l="UB">1.062</td></tr>
+            <tr><td>Footing at the crest of a 30° undrained slope, 4 m high, B = 2 m, weightless (no closed form; bracket shown as N<sub>c</sub>)</td><td class="n" data-l="Ref.">–</td><td class="n" data-l="LB">4.06</td><td class="n" data-l="UB">4.13</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script id="src-highs" type="text/plain">/*__HIGHS__*/</script>
+<script id="src-engine">/*__ENGINE__*/</script>
+<script id="wasm" type="application/octet-stream">__WASM_B64__</script>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  /* ================= units: inputs are stored in SI; US is a display conversion ================= */
+  const F = { len: 0.3048, stress: 0.0478803, gam: 0.157087, grad: 0.157087, force: 4.44822, forceLen: 4.44822 / 0.3048, moment: 4.44822, none: 1 };
+  const UL = {
+    us: { len: "ft", stress: "psf", gam: "pcf", grad: "psf/ft", force: "kips", forceLen: "kips/ft", momentLen: "kip·ft/ft", none: "" },
+    si: { len: "m", stress: "kPa", gam: "kN/m³", grad: "kPa/m", force: "kN", forceLen: "kN/m", momentLen: "kN·m/m", none: "" }
+  };
+  const GW = 9.81;
+  const us = () => S.units === "us";
+  const toSI = (v, q) => (us() ? v * F[q] : v);
+  const fromSI = (v, q) => (us() ? v / F[q] : v);
+  const unit = (q) => UL[S.units][q];
+  const tidy = (v) => (isFinite(v) ? String(Number(Number(v).toPrecision(6))) : "");
+  const fmt = (v, d) => (isFinite(v) ? Number(v).toLocaleString(undefined, { maximumFractionDigits: d == null ? 0 : d, minimumFractionDigits: d == null ? 0 : Math.min(d, 1) }) : "–");
+  const dispP = (kPa) => fromSI(kPa, "stress");
+  const fmtP = (kPa) => { const v = dispP(kPa); return us() ? fmt(v, 0) : fmt(v, Math.abs(v) < 100 ? 1 : 0); };
+  const fmtLen = (m) => fmt(fromSI(m, "len"), 2);
+
+  const TYPES = [["strip", "Strip"], ["square", "Square"], ["rect", "Rectangular"], ["circle", "Circular"], ["mat", "Mat"], ["slab", "Slab"]];
+  const QUAL = [["quick", "Quick"], ["std", "Standard"], ["fine", "Fine"]];
+  const QHINT = { quick: "Quick: about 20–40 s. Good for trying options.", std: "Standard: about 1–2 min. Tighter bounds.", fine: "Fine: about 2–5 min. Tightest bounds; uses the most memory." };
+  const QOPTS = {
+    quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false },
+    std: { p: 24, dloNodes: 420, targetElems: 1800 },
+    fine: { p: 24, dloNodes: 480, targetElems: 2600 }
+  };
+  const LAYER_COLORS = ["#d9b77c", "#9fae7c", "#b08d6a", "#8f9fae", "#c5a3a0", "#a6b9b0"];
+  // which quantity each top-level field holds ("load" depends on the footing type)
+  const FIELDS = { B: "len", L: "len", D: "len", P: "load", FS: "none", qs: "stress", wt: "len", Hl: "load", ec: "len", sd: "len", sh: "len", sa: "none" };
+  const LFIELDS = { bottom: "len", c: "stress", phi: "none", grad: "grad", gamma: "gam", gammaSat: "gam" };
+  const qOf = (k, ft) => (FIELDS[k] === "load" ? ((ft || S.ftype) === "strip" ? "forceLen" : "force") : FIELDS[k]);
+
+  // example in US units, converted to SI on load
+  const EXAMPLE_US = {
+    units: "us", ftype: "square", B: 6, L: 6, D: 3, rough: true, P: 150, Hl: 0, ec: 0, FS: 3, qs: 0, hasWT: true, wt: 6, quality: "quick", feub: false,
+    hasSlope: false, sd: 4, sh: 5, sa: 26.6,
+    layers: [
+      { name: "Medium dense sand", drained: true, bottom: 9, c: 0, phi: 34, gamma: 120, gammaSat: 128, grad: 0 },
+      { name: "Stiff clay", drained: false, bottom: 60, c: 2000, phi: 0, gamma: 118, gammaSat: 118, grad: 0 }
+    ]
+  };
+  function stateToSI(st) {
+    const o = JSON.parse(JSON.stringify(st)), f = st.units === "us";
+    if (!f) return o;
+    Object.keys(FIELDS).forEach((k) => { if (typeof o[k] === "number") o[k] *= F[qOf(k, o.ftype)]; });
+    o.layers.forEach((L) => Object.keys(LFIELDS).forEach((k) => { if (typeof L[k] === "number") L[k] *= F[LFIELDS[k]]; }));
+    return o;
+  }
+  function loadState() {
+    try {
+      const t3 = localStorage.getItem("bearing-bounds-v3");
+      if (t3) return JSON.parse(t3);
+      const t2 = localStorage.getItem("bearing-bounds-v2"); // earlier versions stored display units
+      if (t2) { const o = JSON.parse(t2); ["Hl", "ec", "hasSlope", "sd", "sh", "sa"].forEach((k) => { if (o[k] === undefined) o[k] = EXAMPLE_US[k]; }); return stateToSI(o); }
+    } catch (e) { /* storage unavailable */ }
+    return null;
+  }
+  function save() { try { localStorage.setItem("bearing-bounds-v3", JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
+  let S = loadState() || stateToSI(EXAMPLE_US);
+  let result = null, view = "model", running = false;
+  const touched = new Set(); let showAllErrors = false;
+  const openLayers = new Set(); const layerNotes = {};
+
+  /* ================= model from a state (SI) ================= */
+  function engineModel(I) {
+    const layers = I.layers.map((L, i) => ({
+      bottom: i === I.layers.length - 1 ? 1e9 : L.bottom, c: Math.max(0, L.c || 0), phi: L.drained ? Math.max(0, Math.min(50, L.phi || 0)) : 0,
+      gamma: L.gamma, gammaSat: L.gammaSat, suGrad: L.drained ? 0 : (L.grad || 0), undrained: !L.drained, name: L.name
+    }));
+    const tanA = I.P > 0 ? (I.Hl || 0) / I.P : 0;
+    return { B: I.B, D: I.D || 0, rough: I.rough, gammaW: GW, waterDepth: I.hasWT ? Math.max(0, I.wt) : null, surcharge: I.qs || 0, layers,
+      load: { tanA: tanA, e: I.ec || 0 }, slope: I.hasSlope ? { dist: Math.max(0, I.sd || 0), height: Math.max(0, I.sh || 0), angle: I.sa } : null };
+  }
+  // everything that changes the analysis (not the applied load size or the target FS)
+  function runKey(I) {
+    const m = engineModel(I); m.load.tanA = Math.round(m.load.tanA * 1e9) / 1e9;
+    return JSON.stringify([m, I.ftype, ["rect", "mat", "slab"].includes(I.ftype) ? I.L : 0]);
+  }
+  const isStale = () => !!result && runKey(S) !== result.key;
+  // length that turns a per-unit-length strip load into a total: area / B
+  function lengthOf(I, ft) {
+    ft = ft || I.ftype;
+    if (ft === "strip") return 1;
+    if (ft === "square") return I.B;
+    if (ft === "circle") return Math.PI * I.B / 4;
+    return I.L;
+  }
+  const area = (I) => I.B * lengthOf(I);
+  const appliedPressure = (I) => (I.P || 0) / area(I);
+  function prepLayers(m) { let top = 0; return m.layers.map((l) => { const o = Object.assign({}, l, { top }); top = l.bottom; return o; }); }
+  function shapeInfo(I, q0) {
+    const m = engineModel(I), lay = FELA.soilAt(m, (m.D || 0) + 1e-6);
+    const shape = I.ftype === "strip" ? "strip" : I.ftype === "circle" ? "circle" : "rect";
+    const L = I.ftype === "square" || I.ftype === "circle" ? I.B : I.ftype === "strip" ? Infinity : I.L;
+    const g = FELA.unitWeightAt(Object.assign({}, m, { layers: prepLayers(m) }), (m.D || 0) + I.B / 2);
+    const alphaDeg = I.P > 0 ? Math.atan(Math.abs(I.Hl || 0) / I.P) * 180 / Math.PI : 0;
+    const c = FELA.classical(lay.phi, lay.c, g, q0, I.B, L, shape, { e: I.ec || 0, alphaDeg: alphaDeg });
+    return { c, ratio: shape === "strip" ? 1 : c.qult / c.qultStrip, lay, g };
+  }
+
+  /* ================= validation (field-level) ================= */
+  function validate(I) {
+    const E = [], add = (id, msg) => E.push({ id, msg });
+    const len = (m) => fmtLen(m) + " " + unit("len");
+    if (!(I.B > 0)) add("B", "Enter a footing width greater than zero.");
+    if (["rect", "mat", "slab"].includes(I.ftype) && !(I.L >= I.B)) add("L", "Length L must be at least the width B (" + len(I.B) + ").");
+    if (!(I.D >= 0)) add("D", "Embedment cannot be negative.");
+    if (!(I.FS >= 1)) add("FS", "Use a target factor of safety of 1 or more.");
+    if (!(I.P >= 0)) add("P", "Enter a vertical load of zero or more.");
+    if (I.B > 0 && Math.abs(I.ec || 0) >= 0.475 * I.B) add("ec", "The eccentricity must be smaller than 0.475 B (" + len(0.475 * I.B) + ").");
+    if ((I.Hl || 0) !== 0 && !(I.P > 0)) add("P", "Enter a vertical load: H and e are applied in proportion to it.");
+    if ((I.Hl || 0) !== 0 && !I.rough) add("Hl", "A smooth base cannot carry horizontal load. Tick Rough base or set H to zero.");
+    if (!(I.qs >= 0)) add("qs", "The surcharge cannot be negative.");
+    if (I.hasSlope) {
+      if (!(I.sh > 0)) add("sh", "Enter a slope height greater than zero, or untick the slope.");
+      if (!(I.sa >= 5 && I.sa <= 80)) add("sa", "Use an angle between 5 and 80 degrees.");
+      if (!(I.sd >= 0)) add("sd", "The distance to the crest cannot be negative.");
+      if (I.hasWT && I.sh > 0 && I.wt < I.sh) add("wt", "The water table must be at or below the slope toe (" + len(I.sh) + "), or untick the slope.");
+    }
+    if (I.hasWT && !(I.wt >= 0)) add("wt", "Enter a water table depth of zero or more.");
+    let top = 0;
+    I.layers.forEach((L, i) => {
+      const last = i === I.layers.length - 1;
+      if (!last && !(L.bottom > top)) add("lb" + i, "Must be deeper than the top of this layer (" + len(top) + ").");
+      if (!(L.gamma > 0)) add("lw" + i, "Enter a positive unit weight.");
+      if (!(L.gammaSat > 0)) add("ls" + i, "Enter a positive unit weight.");
+      if (L.drained && !(L.phi > 0) && !(L.c > 0)) add("lp" + i, "Give this layer some strength: c′ or φ′.");
+      if (L.drained && !(L.phi >= 0 && L.phi <= 50)) add("lp" + i, "Use φ′ between 0 and 50°.");
+      if (!L.drained && !(L.c > 0)) add("lc" + i, "Enter an undrained strength.");
+      if (!last) top = L.bottom;
+    });
+    return E;
+  }
+  function showErrors(force) {
+    const E = validate(S);
+    document.querySelectorAll(".ferr").forEach((n) => n.remove());
+    document.querySelectorAll("[aria-invalid]").forEach((n) => { n.removeAttribute("aria-invalid"); n.removeAttribute("aria-describedby"); });
+    document.querySelectorAll("details.layer.bad").forEach((n) => n.classList.remove("bad"));
+    const seen = new Set();
+    E.forEach(({ id, msg }) => {
+      const el = $(id);
+      if (!el || seen.has(id) || !(force || showAllErrors || touched.has(id))) return;
+      seen.add(id);
+      el.setAttribute("aria-invalid", "true");
+      const small = document.createElement("span"); small.className = "ferr"; small.id = "err-" + id; small.textContent = msg;
+      el.setAttribute("aria-describedby", small.id);
+      el.parentElement.appendChild(small);
+      const lay = el.closest("details.layer"); if (lay) lay.classList.add("bad");
+    });
+    return E;
+  }
+
+  /* ================= form ================= */
+  function buildSeg(el, items, key) {
+    el.innerHTML = "";
+    items.forEach(([v, t]) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = t; b.setAttribute("aria-pressed", S[key] === v);
+      b.addEventListener("click", () => { if (key === "ftype") switchType(v); else { S[key] = v; save(); renderForm(); } });
+      el.appendChild(b);
+    });
+  }
+  // switching footing type keeps the applied pressure: loads are converted, and the user is told
+  function switchType(to) {
+    const from = S.ftype;
+    if (from === to) return;
+    const before = Object.assign({}, S);
+    const k = lengthOf(Object.assign({}, S, { ftype: to }), to) / lengthOf(S, from);
+    S.ftype = to;
+    if (to === "rect" || to === "mat" || to === "slab") { if (!(S.L >= S.B)) S.L = to === "rect" ? S.B * 1.5 : S.B * 2; }
+    const k2 = lengthOf(S, to) / lengthOf(before, from);
+    const oldP = S.P, oldH = S.Hl;
+    S.P = (S.P || 0) * k2; S.Hl = (S.Hl || 0) * k2;
+    save(); renderForm(); afterInput();
+    const note = $("loadNote");
+    if (oldP > 0) {
+      note.hidden = false;
+      note.textContent = `Load converted from ${tidyDisp(oldP, qOf("P", from))} ${unit(qOf("P", from))} to ${tidyDisp(S.P, qOf("P"))} ${unit(qOf("P"))}` +
+        (oldH ? ` (H to ${tidyDisp(S.Hl, qOf("Hl"))} ${unit(qOf("Hl"))})` : "") +
+        ` so the applied pressure stays ${fmtP(appliedPressure(S))} ${unit("stress")}. ` + (to === "strip" ? "Strip loads are per unit length." : "Loads are totals for the whole footing.") + " Check the values.";
+    }
+  }
+  const tidyDisp = (si, q) => { const v = fromSI(si, q); return Number(v.toPrecision(4)).toLocaleString(); };
+  function setField(id, si, q) { const el = $(id); if (document.activeElement !== el) el.value = tidy(fromSI(si, q)); }
+  function renderForm() {
+    $("u-us").setAttribute("aria-pressed", us()); $("u-si").setAttribute("aria-pressed", !us());
+    buildSeg($("ftype"), TYPES, "ftype"); buildSeg($("quality"), QUAL, "quality");
+    $("qualityHint").textContent = QHINT[S.quality];
+    const t = S.ftype;
+    $("lbl-B").textContent = (t === "circle" ? "Diameter B" : "Width B") + " (" + unit("len") + ")";
+    $("wrap-L").hidden = !(t === "rect" || t === "mat" || t === "slab");
+    $("lbl-L").textContent = "Length L (" + unit("len") + ")";
+    $("lbl-D").textContent = "Embedment D (" + unit("len") + ")";
+    $("lbl-P").textContent = "Vertical load V (" + unit(qOf("P")) + ")";
+    $("lbl-H").textContent = "Horizontal load H (" + unit(qOf("Hl")) + ")";
+    $("lbl-e").textContent = "Eccentricity e (" + unit("len") + ")";
+    $("lbl-q").textContent = "Ground surcharge beside footing (" + unit("stress") + ")";
+    $("lbl-sd").textContent = "Footing edge to crest (" + unit("len") + ")";
+    $("lbl-sh").textContent = "Slope height (" + unit("len") + ")";
+    $("lbl-wt").textContent = "Depth below ground (" + unit("len") + ")";
+    $("hasSlope").checked = S.hasSlope; $("slopeRow").hidden = !S.hasSlope;
+    Object.keys(FIELDS).forEach((k) => setField(k, S[k], qOf(k)));
+    $("rough").checked = S.rough; $("hasWT").checked = S.hasWT; $("wrap-wt").hidden = !S.hasWT; $("feub").checked = S.feub;
+    renderLayers();
+    showErrors(false);
+  }
+  function layerSummary(L, i) {
+    const last = i === S.layers.length - 1, top = i === 0 ? 0 : S.layers[i - 1].bottom;
+    const depth = last ? "below " + fmtLen(top) + " " + unit("len") : fmtLen(top) + "–" + fmtLen(L.bottom) + " " + unit("len");
+    const str = L.drained ? `φ′ ${fmt(L.phi, 1)}°, c′ ${fmt(fromSI(L.c, "stress"), 0)}` : `su ${fmt(fromSI(L.c, "stress"), 0)}${L.grad ? " + " + fmt(fromSI(L.grad, "grad"), 1) + "/" + unit("len") : ""}`;
+    return `${depth} · ${str} · γ ${fmt(fromSI(L.gamma, "gam"), 1)}`;
+  }
+  function renderLayers() {
+    const box = $("layers");
+    box.innerHTML = "";
+    S.layers.forEach((L, i) => {
+      const top = i === 0 ? 0 : S.layers[i - 1].bottom, last = i === S.layers.length - 1;
+      const d = document.createElement("details");
+      d.className = "layer"; d.open = openLayers.has(i);
+      d.addEventListener("toggle", () => { if (d.open) openLayers.add(i); else openLayers.delete(i); });
+      const v = (k) => tidy(fromSI(L[k], LFIELDS[k]));
+      d.innerHTML = `
+        <summary><span class="swatch" style="background:${LAYER_COLORS[i % LAYER_COLORS.length]}"></span>
+          <span class="lsumwrap"><span class="lname" id="lnm${i}"></span><span class="lsum" id="lsum${i}">${layerSummary(L, i)}</span></span></summary>
+        <div class="lbody">
+          ${layerNotes[i] ? `<p class="note warn">${layerNotes[i]}</p>` : ""}
+          <label class="f"><span>Layer name</span><input id="ln${i}" type="text"></label>
+          <div class="row">
+            ${last ? `<div class="f"><span class="hint">From ${fmtLen(top)} ${unit("len")} to the bottom of the model</span></div>`
+                   : `<label class="f"><span>Bottom depth (${unit("len")})</span><input id="lb${i}" type="number" step="any" inputmode="decimal" value="${v("bottom")}"></label>`}
+            <label class="f"><span>Behaviour</span><select id="ld${i}"><option value="1" ${L.drained ? "selected" : ""}>Drained (c′, φ′)</option><option value="0" ${!L.drained ? "selected" : ""}>Undrained (sᵤ)</option></select></label>
+          </div>
+          <div class="row three">
+            <label class="f"><span>${L.drained ? "c′" : "sᵤ"} (${unit("stress")})</span><input id="lc${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("c")}"></label>
+            ${L.drained ? `<label class="f"><span>φ′ (deg)</span><input id="lp${i}" type="number" step="any" min="0" max="50" inputmode="decimal" value="${v("phi")}"></label>`
+                        : `<label class="f"><span>sᵤ increase (${unit("grad")})</span><input id="lg${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("grad")}"></label>`}
+            <label class="f"><span>γ (${unit("gam")})</span><input id="lw${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("gamma")}"></label>
+          </div>
+          <div class="lfoot">
+            <label class="f" style="flex:1"><span>γ<sub>sat</sub> (${unit("gam")})</span><input id="ls${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("gammaSat")}"></label>
+            ${S.layers.length > 1 ? `<button type="button" class="icon-btn" data-del="${i}">Remove layer</button>` : ""}
+          </div>
+        </div>`;
+      box.appendChild(d);
+      $("lnm" + i).textContent = L.name || "Layer " + (i + 1);
+      $("ln" + i).value = L.name || "";
+      const bind = (id, key) => {
+        const el = $(id); if (!el) return;
+        el.addEventListener("input", () => {
+          L[key] = key === "name" ? el.value : (el.value === "" ? NaN : toSI(parseFloat(el.value), LFIELDS[key]));
+          if (key === "name") $("lnm" + i).textContent = el.value || "Layer " + (i + 1);
+          else $("lsum" + i).textContent = layerSummary(L, i);
+          delete layerNotes[i];
+          save(); afterInput();
+        });
+        el.addEventListener("focusout", () => { touched.add(id); showErrors(false); });
+      };
+      bind("ln" + i, "name"); bind("lb" + i, "bottom"); bind("lc" + i, "c"); bind("lp" + i, "phi");
+      bind("lg" + i, "grad"); bind("lw" + i, "gamma"); bind("ls" + i, "gammaSat");
+      $("ld" + i).addEventListener("change", (e) => { L.drained = e.target.value === "1"; if (!L.drained) L.phi = 0; else if (!L.phi) L.phi = 30; save(); renderLayers(); afterInput(); });
+    });
+    box.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => {
+      const i = +b.dataset.del;
+      S.layers.splice(i, 1); openLayers.clear(); Object.keys(layerNotes).forEach((k) => delete layerNotes[k]);
+      save(); renderLayers(); afterInput();
+    }));
+    $("addLayer").hidden = S.layers.length >= 6;
+    showErrors(false);
+  }
+  Object.keys(FIELDS).forEach((k) => {
+    $(k).addEventListener("input", () => {
+      const raw = $(k).value;
+      S[k] = raw === "" ? NaN : toSI(parseFloat(raw), qOf(k));
+      if (k === "P" || k === "Hl") $("loadNote").hidden = true;
+      save(); afterInput();
+    });
+    $(k).addEventListener("focusout", () => { touched.add(k); showErrors(false); });
+  });
+  $("hasSlope").addEventListener("change", (e) => { S.hasSlope = e.target.checked; $("slopeRow").hidden = !S.hasSlope; save(); afterInput(); });
+  $("rough").addEventListener("change", (e) => { S.rough = e.target.checked; save(); afterInput(); });
+  $("hasWT").addEventListener("change", (e) => { S.hasWT = e.target.checked; $("wrap-wt").hidden = !S.hasWT; save(); afterInput(); });
+  $("feub").addEventListener("change", (e) => { S.feub = e.target.checked; save(); });
+  $("addLayer").addEventListener("click", () => {
+    // the current bottom layer is infinite; give it a bottom so the new layer can start below it, and say so
+    const n = S.layers.length, last = S.layers[n - 1];
+    const top = n > 1 ? S.layers[n - 2].bottom : 0;
+    const topD = fromSI(top, "len"), stepD = fromSI(Math.max(S.B || 0.3, 0.3) * 1.5, "len");
+    last.bottom = toSI(Math.round(topD + Math.max(1, Math.round(stepD))), "len");
+    layerNotes[n - 1] = `This layer now ends at ${fmtLen(last.bottom)} ${unit("len")} so the new layer can start below it. Change the bottom depth if needed.`;
+    S.layers.push({ name: "Layer " + (n + 1), drained: true, bottom: toSI(Math.round(fromSI(last.bottom * 3, "len")), "len"), c: 0, phi: 32, gamma: last.gamma, gammaSat: last.gammaSat, grad: 0 });
+    openLayers.clear(); openLayers.add(n - 1); openLayers.add(n);
+    save(); renderLayers(); afterInput();
+  });
+  function switchUnits(to) {
+    if (S.units === to) return;
+    S.units = to; save(); renderForm(); renderResults(); drawCurrent();
+  }
+  $("u-us").addEventListener("click", () => switchUnits("us"));
+  $("u-si").addEventListener("click", () => switchUnits("si"));
+  // any edit: redraw the model, re-check staleness, refresh the live FS
+  function afterInput() { showErrors(false); drawCurrent(); renderResults(); }
+
+  /* ================= run (background worker, discarded after each run) ================= */
+  function setStatus(t, err) { const s = $("status"); s.textContent = t; s.classList.toggle("err", !!err); }
+  const WORKER_MAIN = `
+    function velocityGrid(r) {
+      const xL = r.model.xL, W = r.model.xR - xL, H = r.model.H, g = r.model.geo;
+      const nx = 150, ny = Math.max(30, Math.round(nx * H / W)), grid = new Float32Array(nx * ny);
+      let vmax = 0;
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const x = xL + (i + 0.5) / nx * W, y = -(j + 0.5) / ny * H;
+        if (!g.inside(x, y)) { grid[j * nx + i] = -1; continue; }
+        const v = FELA.dloVelocity(r.dlo, x, y), m = Math.hypot(v[0], v[1]);
+        grid[j * nx + i] = m; vmax = Math.max(vmax, m);
+      }
+      const ax = 34, ay = Math.max(8, Math.round(ax * H / W)), arrows = [];
+      let amax = 0;
+      for (let j = 0; j < ay; j++) for (let i = 0; i < ax; i++) {
+        const x = xL + (i + 0.5) / ax * W, y = -(j + 0.5) / ay * H;
+        if (!g.inside(x, y)) continue;
+        const v = FELA.dloVelocity(r.dlo, x, y), m = Math.hypot(v[0], v[1]);
+        if (m > 1e-9) { arrows.push([x, y, v[0], v[1]]); amax = Math.max(amax, m); }
+      }
+      return { nx: nx, ny: ny, g: grid, vmax: vmax, xL: xL, W: W, H: H, arrows: arrows, amax: amax, cell: Math.min(W / ax, H / ay) };
+    }
+    self.onmessage = async (ev) => {
+      const d = ev.data;
+      try {
+        const highs = await Module({ instantiateWasm: (imports, done) => { WebAssembly.instantiate(d.bytes, imports).then((r) => done(r.instance)); return {}; } });
+        const opts = Object.assign({}, d.opts, { onProgress: (t, f) => self.postMessage({ type: "progress", t: t, f: f }) });
+        const r = await FELA.analyse(highs, d.model, opts);
+        r.velGrid = velocityGrid(r);
+        delete r.model.geo;
+        if (r.mats) r.mats = null;
+        self.postMessage({ type: "done", r: r });
+      } catch (e) {
+        self.postMessage({ type: "error", message: e && e.message ? e.message : String(e) });
+      }
+    };
+  `;
+  let workerUrl = null, worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
+  function makeWorker() {
+    if (!workerUrl) {
+      const src = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
+      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+    }
+    return new Worker(workerUrl);
+  }
+  const clock = () => { const s = Math.round((Date.now() - t0) / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+  function setRunning(on) {
+    running = on;
+    $("go").textContent = on ? "Stop" : "Run limit analysis";
+    $("go").classList.toggle("stop", on);
+    $("prog").classList.toggle("busy", on);
+    $("summary").classList.toggle("is-running", on);
+    if (on) { t0 = Date.now(); timer = setInterval(() => setStatus(stepText + " · " + clock()), 1000); }
+    else { clearInterval(timer); timer = null; if (worker) { worker.terminate(); worker = null; } }
+    renderResults();
+  }
+  // plain-language steps; the count depends on whether the finite element upper bound runs
+  function stepOf(t, I) {
+    const feLikely = I.feub || I.layers.length > 1 || ((I.hasSlope || I.Hl || I.ec) && I.quality !== "quick");
+    const n = feLikely ? 3 : 2;
+    if (/discontinuity/i.test(t)) return { k: 1, n, txt: "finding the collapse mechanism (upper bound)" };
+    if (/Lower bound/i.test(t)) return { k: 2, n, txt: "building a safe stress field (lower bound)" };
+    if (/finite elements/i.test(t)) return { k: 3, n: 3, txt: "checking the upper bound with finite elements" };
+    return { k: 1, n, txt: t };
+  }
+  async function run(ev) {
+    if (ev) ev.preventDefault();
+    if (running) { setRunning(false); setStatus("Stopped. Change the inputs or the mesh and run again."); $("bar").style.width = "0%"; return; }
+    if (!wasmBytes) return;
+    showAllErrors = true;
+    const E = showErrors(true);
+    if (E.length) {
+      const el = $(E[0].id);
+      const lay = el && el.closest("details.layer"); if (lay) lay.open = true;
+      if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "center", behavior: reduceMotion() ? "auto" : "smooth" }); }
+      setStatus("Fix the highlighted field" + (E.length > 1 ? "s" : "") + " first: " + E[0].msg, true);
+      return;
+    }
+    const I = JSON.parse(JSON.stringify(S));
+    const m = engineModel(I);
+    const opts = Object.assign({}, QOPTS[I.quality], { feUpper: I.feub ? true : undefined });
+    try { worker = makeWorker(); }
+    catch (e) { setStatus("This browser would not start a background worker for the solver: " + (e && e.message ? e.message : e), true); return; }
+    stepText = "Starting the solver"; setRunning(true); $("bar").style.width = "3%"; setStatus(stepText);
+    worker.onmessage = (msgEv) => {
+      const d = msgEv.data;
+      if (d.type === "progress") {
+        const st = stepOf(d.t, I);
+        stepText = `Step ${st.k} of ${st.n}: ${st.txt}`;
+        setStatus(stepText + " · " + clock());
+        $("bar").style.width = Math.max(3, Math.round((st.k - 1) / st.n * 100)) + "%";
+        return;
+      }
+      if (d.type === "error") { setRunning(false); $("bar").style.width = "0%"; setStatus("The analysis stopped: " + d.message + " Try the Quick mesh or check the inputs.", true); return; }
+      if (d.type === "done") {
+        const r = d.r;
+        try { r.model.geo = FELA.geometry(r.model); } catch (e) { /* drawing falls back to the input model */ }
+        r.inputs = I; r.key = runKey(I);
+        result = r;
+        const took = clock();
+        setRunning(false);
+        setStatus(`Finished in ${took}.` + (r.warnings.length ? " " + r.warnings.join(" ") : ""), r.warnings.length > 0);
+        $("bar").style.width = "100%";
+        if (view === "model") view = "anim";
+        renderResults(); buildTabs();
+        if (view === "anim") animStart();
+        drawCurrent();
+        if (window.matchMedia("(max-width: 900px)").matches) $("summary").scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" });
+      }
+    };
+    worker.onerror = (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      setRunning(false); $("bar").style.width = "0%";
+      setStatus("The solver ran out of memory or crashed" + (e && e.message ? " (" + e.message + ")" : "") + ". Use the Quick or Standard mesh.", true);
+    };
+    const bytes = wasmBytes.slice();
+    worker.postMessage({ bytes: bytes, model: m, opts: opts }, [bytes.buffer]);
+  }
+  const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  $("form").addEventListener("submit", run);
+  $("rerun").addEventListener("click", () => run());
+
+  /* ================= results ================= */
+  function bounds() {
+    if (!result) return null;
+    const I = result.inputs, sh = shapeInfo(I, result.model.q0);
+    const lb = result.best.lb, ub = result.best.ub, uB = result.uBase || 0;
+    return { I, lb, ub, uB, lbS: lb * sh.ratio, ubS: ub * sh.ratio, ratio: sh.ratio, sh, q0: result.model.q0, classical: sh.c.qult + uB };
+  }
+  function verdictOf(b, qa, fs) {
+    if (!(qa > 0)) return ["idle", "No load entered"];
+    if (b.lbS / qa >= fs) return ["ok", "Meets target FS"];
+    if (b.ubS / qa >= fs) return ["warn", "Inside the bound gap"];
+    return ["bad", "Below target FS"];
+  }
+  function renderResults() {
+    const b = bounds(), stale = isStale(), V = $("verdict"), RV = $("runVerdict");
+    $("summary").classList.toggle("is-stale", stale);
+    $("staleNote").hidden = !stale || running;
+    document.querySelectorAll(".viewer, .cols").forEach((n) => n.classList.toggle("results-dim", stale || running));
+    const qa = appliedPressure(S), fs = S.FS > 0 ? S.FS : 3;
+    $("fApp").textContent = fmtP(qa); $("uApp").textContent = unit("stress") + (S.ftype === "strip" ? ", from V ÷ B" : ", from V ÷ area");
+    if (running) { V.className = "pill run"; V.textContent = "Running…"; RV.className = "runverdict idle"; RV.textContent = ""; }
+    if (!b) {
+      ["fLB", "fUB", "fAll"].forEach((k) => ($(k).textContent = "–"));
+      ["uLB", "uUB", "uAll"].forEach((k) => ($(k).textContent = ""));
+      if (!running) { V.className = "pill idle"; V.textContent = "Not yet run"; }
+      $("answer").innerHTML = `<span class="sub">Press Run limit analysis to compute the factor of safety. ${QHINT[S.quality]}</span>`;
+      $("classicWhy").textContent = ""; $("sumFoot").textContent = "";
+      drawBar();
+      return;
+    }
+    const I = b.I, strip = I.ftype === "strip";
+    $("fLB").textContent = fmtP(b.lbS); $("fUB").textContent = fmtP(b.ubS);
+    $("uLB").textContent = unit("stress"); $("uUB").textContent = unit("stress");
+    $("fAll").textContent = fmtP(b.lbS / fs); $("uAll").textContent = unit("stress") + " at FS " + fmt(fs, 1);
+    const [cls, txt] = verdictOf(b, qa, fs);
+    if (stale) {
+      if (!running) { V.className = "pill warn"; V.textContent = "Inputs changed – re-run"; }
+      $("answer").innerHTML = `<span class="sub">Run again to get the factor of safety for the current inputs.</span>`;
+      RV.className = "runverdict warn"; RV.textContent = running ? "" : "Inputs changed";
+    } else {
+      if (!running) { V.className = "pill " + cls; V.textContent = txt; }
+      const fsv = qa > 0 ? b.lbS / qa : NaN;
+      $("answer").innerHTML = qa > 0
+        ? `<span class="lab">Factor of safety on the lower bound</span><span class="big" style="color:var(--${cls === "ok" ? "good" : cls === "warn" ? "warn" : "bad"})">${fmt(fsv, 2)}</span><span class="sub">target ${fmt(fs, 1)} · on the upper bound ${fmt(b.ubS / qa, 2)}</span>`
+        : `<span class="sub">Enter a vertical load to get the factor of safety. The collapse pressure is below.</span>`;
+      RV.className = "runverdict " + (running ? "idle" : cls); RV.textContent = running ? "" : (qa > 0 ? "FS " + fmt(fsv, 2) + " · " + txt.replace("Meets target FS", "meets target").replace("Below target FS", "below target").replace("Inside the bound gap", "inside bound gap") : "");
+    }
+    $("sumFoot").textContent = "Gross pressures on the footing base" + (result.sym ? "" : " (vertical component at collapse, V ÷ area, with H and M increased in proportion)") +
+      (strip ? ", from plane-strain analysis." : `, from plane-strain analysis × ${fmt(b.ratio, 3)} shape adjustment for a ${TYPES.find((t) => t[0] === I.ftype)[1].toLowerCase()} footing (an estimate, not a rigorous bound).`);
+    $("classicWhy").textContent = classicalWhy(b);
+    drawBar();
+    renderDetail(b);
+  }
+  function classicalWhy(b) {
+    const I = b.I, m = engineModel(I), why = [];
+    const baseIdx = I.layers.findIndex((L, i) => i === I.layers.length - 1 || L.bottom > (I.D || 0) + 1e-9);
+    const below = I.layers.slice(baseIdx + 1).filter((L, i) => { const top = I.layers[baseIdx + i].bottom; return top < (I.D || 0) + 2.5 * I.B; });
+    if (below.length) why.push(`it uses only ${I.layers[baseIdx].name || "the layer at the base"} and ignores ${below.map((L) => L.name || "the layer below").join(" and ")} within ${fmtLen(2.5 * I.B)} ${unit("len")} below`);
+    if (I.hasSlope) why.push("it ignores the slope");
+    const base = I.layers[baseIdx];
+    if (base && base.drained && base.phi > 0 && base.gamma > 0) why.push("Vesić's N_γ is higher than the exact plane-strain value");
+    if (I.Hl || I.ec) why.push("the effective-width and inclination factors are approximate");
+    if (!why.length) return "";
+    const diff = (b.classical - b.lbS) / b.lbS * 100;
+    const list = why.length > 1 ? why.slice(0, -1).join(", ") + ", and " + why[why.length - 1] : why[0];
+    return `Classical is ${fmt(Math.abs(diff), 0)}% ${diff >= 0 ? "above" : "below"} the lower bound because ${list}.`.replace("N_γ", "Nγ");
+  }
+  function fmtF(v, q) { return fmt(fromSI(v, q), Math.abs(fromSI(v, q)) < 100 ? 1 : 0) + " " + unit(q === "moment" ? "momentLen" : q); }
+  function motionText(m) {
+    if (!m) return "–";
+    const parts = [];
+    if (Math.abs(m.u) > 0.05) parts.push("slides " + (m.u > 0 ? "right" : "left"));
+    if (m.v < -0.05) parts.push("settles"); else if (m.v > 0.05) parts.push("lifts");
+    if (Math.abs(m.w) * result.inputs.B / 2 > 0.05) parts.push("rotates " + (m.w < 0 ? "clockwise" : "anticlockwise"));
+    return parts.length ? parts.join(", ") : "settles";
+  }
+  function renderDetail(b) {
+    const r = result, I = b.I, u = unit("stress"), strip = I.ftype === "strip";
+    const gap = (b.ub - b.lb) / (0.5 * (b.ub + b.lb)) * 100;
+    const rows = [
+      ["Plane-strain lower bound (before shape factor)", fmtP(b.lb) + " " + u],
+      ["Plane-strain upper bound (before shape factor)", fmtP(b.ub) + " " + u],
+      ["Upper bound from", r.best.ubMethod === "Finite element" ? "finite elements" : "discontinuity layout"],
+      ["Collapse load per unit length (LB)", "V " + fmtF(r.best.Vlb, "forceLen") + (r.best.tanA ? ", H " + fmtF(r.best.Vlb * r.best.tanA, "forceLen") : "") + (r.best.e ? ", M " + fmtF(r.best.Vlb * r.best.e, "moment") : "")],
+      ["Footing motion at collapse", motionText(r.best.mech)],
+      ["Bound gap (± about the mean)", fmt(gap / 2, 1) + " %"],
+      ["Shape adjustment ratio", strip ? "1 (strip)" : fmt(b.ratio, 3)],
+      ["Effective overburden at base, q′₀", fmtP(b.q0) + " " + u],
+      ["Pore pressure at base (included in gross)", fmtP(b.uB) + " " + u],
+      ["Lower-bound mesh", fmt(r.mesh.nE) + " triangles"],
+      ["Upper-bound layout", fmt(r.dlo.nodes.length) + " nodes, " + fmt(r.dlo.nLines) + " lines"],
+      ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s"],
+      ["Discontinuity layout UB", fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)")]
+    ];
+    if (r.ub) rows.push(["Finite element UB", fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" ? ", run for the " + r.feReason : "")]);
+    rows.push(["Analysed domain" + (r.sym ? " (half section)" : ""), fmtLen(r.model.xR - r.model.xL) + " × " + fmtLen(r.model.H) + " " + unit("len")]);
+    $("detail").innerHTML = "<tbody>" + rows.map((x) => `<tr><td>${x[0]}</td><td class="n">${x[1]}</td></tr>`).join("") + "</tbody>";
+    const c = b.sh.c, lay = b.sh.lay;
+    $("classic").innerHTML = `<table><thead><tr><th>Factor</th><th class="n sym">c</th><th class="n sym">q</th><th class="n sym">γ</th></tr></thead><tbody>
+      <tr><td>Bearing capacity N</td><td class="n">${fmt(c.Nc, 2)}</td><td class="n">${fmt(c.Nq, 2)}</td><td class="n">${fmt(c.Ng, 2)}</td></tr>
+      <tr><td>Shape s</td><td class="n">${fmt(c.sc, 2)}</td><td class="n">${fmt(c.sq, 2)}</td><td class="n">${fmt(c.sg, 2)}</td></tr>
+      <tr><td>Inclination i</td><td class="n">${fmt(c.ic, 2)}</td><td class="n">${fmt(c.iq, 2)}</td><td class="n">${fmt(c.ig, 2)}</td></tr></tbody></table>
+      <table class="kv"><tbody>
+      <tr><td>Effective width B′</td><td class="n">${fmtLen(c.Bp)} ${unit("len")}</td></tr>
+      <tr><td>Strip q′<sub>ult</sub> on B, effective</td><td class="n">${fmtP(c.qultStrip)} ${u}</td></tr>
+      <tr><td>${strip ? "Strip" : "Shape-adjusted"} q<sub>ult</sub>, gross</td><td class="n">${fmtP(b.classical)} ${u}</td></tr></tbody></table>`;
+    $("classicNote").textContent = `Vesić factors for ${lay.name || "the layer at the footing base"} (${lay.phi > 0 ? "φ′ " + lay.phi + "°, c′ " + fmtP(lay.c) : "sᵤ " + fmtP(lay.c)} ${u}). Meyerhof effective width and inclination factors are applied; pressures are averaged over the full width. Classical formulas assume one uniform soil and level ground.`;
+    buildCopy(b);
+  }
+  function buildCopy(b) {
+    const I = b.I, u = unit("stress"), len = unit("len");
+    const qa = appliedPressure(S), fs = S.FS;
+    const lines = [
+      `Bearing Bounds summary (${TYPES.find((t) => t[0] === I.ftype)[1]} footing, B = ${fmtLen(I.B)} ${len}${["rect", "mat", "slab"].includes(I.ftype) ? ", L = " + fmtLen(I.L) + " " + len : ""}, D = ${fmtLen(I.D)} ${len}, ${I.rough ? "rough" : "smooth"} base)`,
+      `Factor of safety on lower bound: ${fmt(b.lbS / qa, 2)} (target ${fmt(fs, 1)}); on upper bound: ${fmt(b.ubS / qa, 2)}`,
+      `Collapse pressure (gross): lower bound ${fmtP(b.lbS)} ${u}, upper bound ${fmtP(b.ubS)} ${u}; allowable (LB / FS) ${fmtP(b.lbS / fs)} ${u}; applied ${fmtP(qa)} ${u}`,
+      `Plane-strain bounds ${fmtP(b.lb)} to ${fmtP(b.ub)} ${u}; shape ratio ${fmt(b.ratio, 3)}; pore pressure at base ${fmtP(b.uB)} ${u}`,
+      `Soil: ` + I.layers.map((L, k) => `${L.name} ${layerSummaryFor(I, L, k)}`).join("; "),
+      `Load: V ${tidyDisp(S.P, qOf("P"))} ${unit(qOf("P"))}, H ${tidyDisp(I.Hl || 0, qOf("Hl", I.ftype))} ${unit(qOf("Hl", I.ftype))}, e ${fmtLen(I.ec || 0)} ${len}, increased in proportion. Ground: ${I.hasSlope ? `slope ${I.sa}°, height ${fmtLen(I.sh)} ${len}, crest ${fmtLen(I.sd)} ${len} from footing edge` : "level"}. Water table: ${I.hasWT ? fmtLen(I.wt) + " " + len : "none"}.`,
+      `Method: finite element limit analysis lower bound, discontinuity layout optimisation upper bound, plane strain; ${I.quality} mesh.`
+    ];
+    $("copyTxt").value = lines.join("\n");
+  }
+  function layerSummaryFor(I, L, i) {
+    const last = i === I.layers.length - 1, top = i === 0 ? 0 : I.layers[i - 1].bottom;
+    const depth = last ? "below " + fmtLen(top) + " " + unit("len") : fmtLen(top) + "–" + fmtLen(L.bottom) + " " + unit("len");
+    return `(${depth}; ${L.drained ? "c'=" + fmt(fromSI(L.c, "stress"), 0) + ", phi'=" + L.phi : "su=" + fmt(fromSI(L.c, "stress"), 0)}; gamma ${fmt(fromSI(L.gamma, "gam"), 1)}/${fmt(fromSI(L.gammaSat, "gam"), 1)} ${unit("gam")})`;
+  }
+  $("copyBtn").addEventListener("click", () => {
+    const t = $("copyTxt");
+    if (!result) { setStatus("Run an analysis first, then copy the summary."); return; }
+    if (isStale()) { setStatus("The inputs changed after the last run. Run again before copying the summary.", true); return; }
+    const done = () => { $("copyBtn").textContent = "Copied"; setTimeout(() => ($("copyBtn").textContent = "Copy summary"), 1500); };
+    try { navigator.clipboard.writeText(t.value).then(done, () => { t.hidden = false; t.select(); }); }
+    catch (e) { t.hidden = false; t.select(); }
+  });
+
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function drawBar(short) {
+    const svg = $("barsvg"), w = svg.clientWidth || 600, Hh = 62, yT = 31;
+    let failed = false;
+    const lab = (name, v) => (short ? name : name + " " + fmtP(v));
+    svg.setAttribute("viewBox", `0 0 ${w} ${Hh}`);
+    const b = bounds(), qa = appliedPressure(S);
+    const font = `font-size="12" font-family="Barlow, sans-serif"`;
+    if (!b) { svg.innerHTML = `<text x="0" y="34" fill="${css("--muted")}" ${font}>The collapse pressure range and your applied pressure will plot here.</text>`; return; }
+    const fs = S.FS > 0 ? S.FS : 3, c = b.classical, target = qa * fs;
+    const core = Math.max(b.ubS || 0, b.lbS || 0);
+    const cOff = c > 1.6 * core, tOff = target > 2.5 * Math.max(core, cOff ? 0 : c);
+    const vals = [b.lbS, b.ubS].concat(cOff ? [] : [c]).concat(tOff || !(qa > 0) ? [] : [target]).filter((v) => v > 0);
+    const right = cOff || tOff ? w - 26 : w - 8;
+    const xmax = Math.max(...vals) * 1.08, X = (v) => Math.min(right, 8 + (right - 8) * v / xmax);
+    const lanes = { above: [], below: [] }, laneY = { above: 12, below: 58 };
+    const widthOf = (t) => t.length * 6.4 + 4;
+    const place = (x, text, col, pref) => {
+      const wd = widthOf(text);
+      const fits = (lane, x0) => x0 >= 2 && x0 + wd <= w - 2 && lanes[lane].every(([a0, a1]) => x0 + wd < a0 - 6 || x0 > a1 + 6);
+      const centre = (x0) => Math.max(2, Math.min(w - 2 - wd, x0));
+      let lane = null, x0 = centre(x - wd / 2);
+      for (const ln of [pref, pref === "above" ? "below" : "above"]) if (fits(ln, x0)) { lane = ln; break; }
+      if (!lane) {
+        let ok = false;
+        for (const ln of [pref, pref === "above" ? "below" : "above"]) {
+          for (let d = 4; d < w && !ok; d += 4) {
+            if (fits(ln, centre(x - wd / 2 + d))) { x0 = centre(x - wd / 2 + d); ok = true; }
+            else if (fits(ln, centre(x - wd / 2 - d))) { x0 = centre(x - wd / 2 - d); ok = true; }
+          }
+          if (ok) { lane = ln; break; }
+        }
+        if (!ok) { failed = true; lane = pref; }
+      }
+      lanes[lane].push([x0, x0 + wd]);
+      return `<text x="${x0}" y="${laneY[lane]}" fill="${col}" ${font}>${text}</text>`;
+    };
+    let h = `<line x1="8" x2="${right}" y1="${yT}" y2="${yT}" stroke="${css("--line")}" stroke-width="2"/>`;
+    h += `<rect x="${X(b.lbS)}" y="${yT - 7}" width="${Math.max(2, X(b.ubS) - X(b.lbS))}" height="14" rx="2" fill="${css("--accent")}" opacity="0.25"/>`;
+    const tick = (v, col) => `<line x1="${X(v)}" x2="${X(v)}" y1="${yT - 10}" y2="${yT + 10}" stroke="${col}" stroke-width="2"/>`;
+    h += tick(b.lbS, css("--lb")) + tick(b.ubS, css("--ub"));
+    let labels = "";
+    labels += place(X(b.lbS), lab("LB", b.lbS), css("--lb"), "below");
+    labels += place(X(b.ubS), lab("UB", b.ubS), css("--ub"), "below");
+    if (qa > 0 && !tOff) {
+      h += `<path d="M${X(target) - 5} ${yT - 14} L${X(target) + 5} ${yT - 14} L${X(target)} ${yT - 6} Z" fill="${css("--ink")}"/>`;
+      labels += place(X(target), lab("FS × applied", target), css("--ink"), "above");
+    }
+    if (!cOff) {
+      h += `<circle cx="${X(c)}" cy="${yT}" r="4" fill="${css("--panel")}" stroke="${css("--muted")}" stroke-width="1.5"/>`;
+      labels += place(X(c), lab("classical", c), css("--muted"), "above");
+    }
+    const offs = [];
+    if (cOff) offs.push([lab("classical", c), css("--muted")]);
+    if (qa > 0 && tOff) offs.push([lab("FS × applied", target), css("--bad")]);
+    if (offs.length) {
+      h += `<path d="M${w - 18} ${yT - 6} L${w - 8} ${yT} L${w - 18} ${yT + 6} Z" fill="${offs[offs.length - 1][1]}"/>`;
+      offs.forEach(([t, col]) => { labels += place(w - 2 - widthOf(t + " →") / 2, t + " →", col, "above"); });
+    }
+    if (failed && !short) return drawBar(true);
+    svg.innerHTML = h + labels;
+    svg.setAttribute("aria-label", `Collapse pressure from ${fmtP(b.lbS)} to ${fmtP(b.ubS)} ${unit("stress")}; classical ${fmtP(c)}` + (qa > 0 ? `; target FS times applied ${fmtP(target)}` : ""));
+  }
+
+  /* ================= section views ================= */
+  const TABS = [["model", "Model"], ["anim", "Collapse animation"], ["mech", "Mechanism (UB)"], ["plastic", "Plastic zones + velocity"], ["mesh", "Mesh"], ["diss", "Dissipation (FE UB)"]];
+  function buildTabs() {
+    const el = $("tabs"); el.innerHTML = "";
+    const avail = TABS.filter(([k]) => k !== "diss" || (result && result.ub));
+    avail.forEach(([k, t]) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.setAttribute("role", "tab"); b.id = "tab-" + k; b.textContent = t;
+      b.setAttribute("aria-selected", view === k); b.setAttribute("aria-controls", "viewpanel");
+      b.tabIndex = view === k ? 0 : -1;
+      if (k !== "model" && !result) b.setAttribute("aria-disabled", "true");
+      b.addEventListener("click", () => select(k));
+      b.addEventListener("keydown", (e) => {
+        const i = avail.findIndex((a) => a[0] === k);
+        let j = null;
+        if (e.key === "ArrowRight") j = (i + 1) % avail.length; else if (e.key === "ArrowLeft") j = (i - 1 + avail.length) % avail.length;
+        else if (e.key === "Home") j = 0; else if (e.key === "End") j = avail.length - 1;
+        if (j != null) { e.preventDefault(); select(avail[j][0], true); }
+      });
+      el.appendChild(b);
+    });
+    $("viewpanel").setAttribute("aria-labelledby", "tab-" + view);
+    function select(k, focus) {
+      if (k !== "model" && !result) { setStatus("Run the analysis first; this view shows its results."); return; }
+      const was = view;
+      view = k; buildTabs();
+      if (k === "anim" && was !== "anim") animStart(); else if (k !== "anim") animStop();
+      drawCurrent();
+      const t = $("tab-" + k); if (t) { if (focus) t.focus(); t.scrollIntoView({ block: "nearest", inline: "nearest" }); }
+    }
+  }
+  function ramp(t) {
+    const st = [[0, [38, 52, 120]], [0.3, [36, 128, 142]], [0.55, [94, 190, 98]], [0.78, [240, 205, 60]], [1, [212, 62, 38]]];
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < st.length; i++) if (t <= st[i][0]) {
+      const a = st[i - 1], b = st[i], f = (t - a[0]) / (b[0] - a[0]);
+      return `rgb(${a[1].map((v, k) => Math.round(v + f * (b[1][k] - v))).join(",")})`;
+    }
+    return "rgb(212,62,38)";
+  }
+  // results views draw the inputs of the run they show; the Model view draws the current inputs
+  const drawnInputs = () => (result && view !== "model" ? result.inputs : S);
+  function viewFrame(I) {
+    const m = engineModel(I);
+    let p;
+    try { p = FELA.prepare(m); } catch (e) { p = null; }
+    if (result && view === "anim") {
+      // zoom to the mechanism (with the slope toe in view), inside the analysed domain
+      const rm = result.model, e = result.dlo.extent || { xL: -I.B, xR: I.B, depth: I.B }, g = rm.geo;
+      const reachR = Math.max(1.5 * I.B, 1.35 * e.xR, g && g.slope ? g.xt + 0.6 * I.B : 0);
+      const reachL = result.sym ? reachR : Math.max(1.5 * I.B, -1.35 * e.xL);
+      return { m, g, xL: -Math.min(reachL, result.sym ? rm.xR : -rm.xL), xR: Math.min(reachR, rm.xR), H: Math.min(rm.H, Math.max(1.2 * I.B, 1.5 * e.depth, g && g.slope ? g.Hs + 0.5 * I.B : 0)) };
+    }
+    if (result && view !== "model") {
+      const rm = result.model;
+      return { m, g: rm.geo, xL: result.sym ? -rm.xR : rm.xL, xR: rm.xR, H: rm.H };
+    }
+    const B = I.B > 0 ? I.B : 1;
+    if (!p) return { m, g: null, xL: -2.5 * B, xR: 2.5 * B, H: 2 * B };
+    const g = p.geo;
+    let xR = Math.max(2.5 * B, g.slope ? g.xt + 0.6 * B : (g.tb !== undefined ? g.xcReal + g.HsReal / g.tb + 0.6 * B : 0));
+    xR = Math.min(xR, Math.max(p.xR, 2.5 * B));
+    const H = Math.min(Math.max(p.H, 1.5 * B), Math.max(1.8 * B, (g.slope ? g.Hs + 1.0 * B : 0)));
+    return { m, g, xL: -Math.max(2.5 * B, 0.6 * xR), xR, H };
+  }
+  function drawCurrent() {
+    const cv = $("cv"), wrap = cv.parentElement, W0 = Math.max(280, wrap.clientWidth || 800);
+    const dpr = window.devicePixelRatio || 1;
+    const I = drawnInputs();
+    if (!(I.B > 0)) return;
+    const F0 = viewFrame(I), m = F0.m, g = F0.g;
+    const xLv = F0.xL, xRv = F0.xR, Hd = F0.H;
+    const D = m.D, above = D + 0.45 * I.B;
+    const pad = W0 < 500 ? 16 : 28;
+    const H0 = Math.round(Math.min(Math.max((W0 - 2 * pad) * (Hd + above) / (xRv - xLv) + 2 * pad, 170), 640));
+    cv.width = Math.round(W0 * dpr); cv.height = Math.round(H0 * dpr); cv.style.height = H0 + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W0, H0);
+    const sc = Math.min((W0 - 2 * pad) / (xRv - xLv), (H0 - 2 * pad) / (Hd + above));
+    const ox = (W0 - sc * (xRv - xLv)) / 2 - xLv * sc, oy = pad + above * sc;
+    const P = (x, y) => [ox + x * sc, oy - y * sc];
+    const ink = css("--ink"), muted = css("--muted"), panel = css("--panel");
+    const drop = (x) => (g && g.tb !== undefined && x > 0 ? g.drop(x) : 0);
+    const groundPts = [xLv];
+    if (g && g.tb !== undefined) { [g.xcReal, g.xcReal + g.HsReal / g.tb].forEach((x) => { if (x > xLv && x < xRv) groundPts.push(x); }); }
+    groundPts.push(xRv);
+    const groundPath = () => {
+      ctx.beginPath();
+      groundPts.forEach((x, k) => { const [px, py] = P(x, D - drop(x)); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+      ctx.lineTo(...P(xRv, -Hd)); ctx.lineTo(...P(xLv, -Hd)); ctx.closePath();
+    };
+    const isModel = view === "model" || !result;
+    const anim = view === "anim" && !!result;
+    const AS = anim ? animState(I) : null;
+    if (anim) drawAnimSoil(ctx, P, I, m, { xLv, xRv, Hd, D, drop }, AS);
+    ctx.save(); groundPath(); ctx.clip();
+    let top = 0;
+    m.layers.forEach((L, i) => {
+      const bot = Math.min(L.bottom, D + Hd);
+      if (top < D + Hd && !anim) {
+        const [x0, y0] = P(xLv, D - top), [x1, y1] = P(xRv, D - bot);
+        ctx.fillStyle = LAYER_COLORS[i % LAYER_COLORS.length];
+        ctx.globalAlpha = isModel ? 0.55 : 0.18;
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+        ctx.globalAlpha = 1;
+      }
+      top = L.bottom;
+    });
+    if (!isModel && !anim) {
+      drawField(ctx, P, sc);
+      if (D > 0) { // soil above the base is a surcharge in the analysis: hatch it
+        ctx.save();
+        const [hx0, hy0] = P(xLv, D), [hx1, hy1] = P(xRv, 0);
+        ctx.beginPath(); ctx.rect(hx0, hy0, hx1 - hx0, hy1 - hy0); ctx.clip();
+        ctx.strokeStyle = muted; ctx.globalAlpha = 0.55; ctx.lineWidth = 0.8;
+        for (let x = hx0 - (hy1 - hy0); x < hx1; x += 8) { ctx.beginPath(); ctx.moveTo(x, hy1); ctx.lineTo(x + (hy1 - hy0), hy0); ctx.stroke(); }
+        ctx.restore();
+      }
+    }
+    // layer boundaries on every view
+    top = 0;
+    m.layers.forEach((L, i) => {
+      if (i < m.layers.length - 1 && L.bottom < D + Hd && !anim) {
+        const [x0, y1] = P(xLv, D - L.bottom), [x1] = P(xRv, 0);
+        ctx.strokeStyle = isModel ? muted : ink; ctx.lineWidth = isModel ? 1 : 1.2; ctx.setLineDash(isModel ? [] : [5, 4]);
+        ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
+      }
+      top = L.bottom;
+    });
+    if (m.waterDepth != null && m.waterDepth < D + Hd) {
+      const yw = D - m.waterDepth, wc = css("--water");
+      ctx.strokeStyle = wc; ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(...P(xLv, yw)); ctx.lineTo(...P(xRv, yw)); ctx.stroke(); ctx.setLineDash([]);
+      const [tx, ty] = P(xLv + 0.12 * (xRv - xLv), yw);
+      ctx.fillStyle = wc; ctx.beginPath(); ctx.moveTo(tx - 6, ty - 10); ctx.lineTo(tx + 6, ty - 10); ctx.lineTo(tx, ty - 1); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    // layer names on the left (the slope and its dimensions are on the right), on a backing chip
+    top = 0;
+    ctx.font = "600 12px Barlow, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    m.layers.forEach((L, i) => {
+      const tY = Math.max(top, D), bot = Math.min(L.bottom, D + Hd);
+      if (tY < D + Hd && bot - tY > 0) {
+        const xr = P(xLv, 0)[0] + (D > 0 ? 70 : 8), ytxt = P(0, D - tY)[1] + 15;
+        if (ytxt < P(0, D - bot)[1] + 2 || bot - tY > 0.3) {
+          const name = (I.layers[i] && I.layers[i].name) || "Layer " + (i + 1), tw = ctx.measureText(name).width;
+          ctx.fillStyle = panel; ctx.globalAlpha = 0.8; ctx.fillRect(xr - 4, ytxt - 12, tw + 8, 16); ctx.globalAlpha = 1;
+          ctx.fillStyle = ink; ctx.fillText(name, xr, ytxt);
+        }
+      }
+      top = L.bottom;
+    });
+    if (!anim) {
+      ctx.strokeStyle = ink; ctx.lineWidth = 1.5;
+      ctx.beginPath(); groundPts.forEach((x, k) => { const [px, py] = P(x, D - drop(x)); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); }); ctx.stroke();
+    }
+    // footing and pedestal (moved rigidly with the mechanism during the animation)
+    const b = I.B / 2, th = Math.max(0.12 * I.B, Math.min(D * 0.4, 0.35 * I.B) || 0.2 * I.B);
+    const FT = (x, y) => (anim ? P(x + AS.d * (AS.fu - AS.fw * y), y + AS.d * (AS.fv + AS.fw * x)) : P(x, y));
+    const poly = (pts) => { ctx.beginPath(); pts.forEach(([x, y], k) => { const [px, py] = FT(x, y); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); }); ctx.closePath(); };
+    const foot = [[-b, 0], [b, 0], [b, th], [-b, th]];
+    poly(foot); ctx.fillStyle = panel; ctx.fill();
+    ctx.save(); poly(foot); ctx.clip();
+    const [fx0, fy0] = P(-b - 0.2 * I.B, th + 0.2 * I.B), [fx1, fy1] = P(b + 0.2 * I.B, -0.2 * I.B);
+    ctx.strokeStyle = muted; ctx.lineWidth = 0.8;
+    for (let x = fx0 - (fy1 - fy0); x < fx1; x += 7) { ctx.beginPath(); ctx.moveTo(x, fy1); ctx.lineTo(x + (fy1 - fy0), fy0); ctx.stroke(); }
+    ctx.restore();
+    poly(foot); ctx.strokeStyle = ink; ctx.lineWidth = 1.5; ctx.stroke();
+    const cw = Math.max(I.B * 0.18, 0.1);
+    const ped = [[-cw / 2, th], [cw / 2, th], [cw / 2, D + 0.25 * I.B], [-cw / 2, D + 0.25 * I.B]];
+    poly(ped); ctx.fillStyle = panel; ctx.fill(); ctx.stroke();
+    // load arrow along (H, -V), at x = e; in the animation its length follows the load
+    const Pv = I.P > 0 ? I.P : 1, Hh = I.Hl || 0, len = anim ? 12 + 46 * AS.frac : 30, n = Math.hypot(Hh, Pv);
+    const dx = Hh / n, dy = Pv / n;
+    const [ax, ay] = FT(Math.max(-b, Math.min(b, I.ec || 0)), D + 0.25 * I.B);
+    const arrowCol = anim ? css(AS.stage === 1 ? "--ink" : AS.stage === 2 ? "--warn" : "--bad") : ink;
+    ctx.strokeStyle = arrowCol; ctx.fillStyle = arrowCol; ctx.lineWidth = anim ? 2.5 : 2;
+    ctx.beginPath(); ctx.moveTo(ax - dx * len, ay - dy * len); ctx.lineTo(ax - dx * 3, ay - dy * 3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ax - dx * 2, ay - dy * 2); ctx.lineTo(ax - dx * 10 - dy * 5, ay - dy * 10 + dx * 5); ctx.lineTo(ax - dx * 10 + dy * 5, ay - dy * 10 - dx * 5); ctx.closePath(); ctx.fill();
+    // dimensions
+    const ul = unit("len");
+    ctx.font = "500 11.5px 'JetBrains Mono', monospace"; ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.strokeStyle = muted; ctx.lineWidth = 1;
+    const dimH = (x0, x1, y, text, above) => {
+      const [p0, py] = P(x0, y), [p1] = P(x1, y), off = above ? -10 : 10;
+      ctx.beginPath(); ctx.moveTo(p0, py + off); ctx.lineTo(p1, py + off);
+      ctx.moveTo(p0, py + off - 4); ctx.lineTo(p0, py + off + 4); ctx.moveTo(p1, py + off - 4); ctx.lineTo(p1, py + off + 4); ctx.stroke();
+      ctx.fillText(text, (p0 + p1) / 2, py + off + (above ? -4 : 13));
+    };
+    const dimV = (x, y0, y1, text) => {
+      const [px, p0] = P(x, y0), [, p1] = P(x, y1);
+      ctx.beginPath(); ctx.moveTo(px, p0); ctx.lineTo(px, p1); ctx.moveTo(px - 4, p0); ctx.lineTo(px + 4, p0); ctx.moveTo(px - 4, p1); ctx.lineTo(px + 4, p1); ctx.stroke();
+      const tw = ctx.measureText(text).width, flip = px + 5 + tw > W0 - 4;
+      ctx.textAlign = flip ? "right" : "left"; ctx.fillText(text, flip ? px - 5 : px + 5, (p0 + p1) / 2 + 4); ctx.textAlign = "center";
+    };
+    if (isModel) dimH(-b, b, 0, "B = " + fmtLen(I.B) + " " + ul, false);
+    if (D > 0 && !anim) {
+      dimV(xLv + 0.04 * (xRv - xLv), D, 0, "D = " + fmtLen(I.D) + " " + ul);
+      ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(...P(xLv, 0)); ctx.lineTo(...P(-b, 0)); ctx.moveTo(...P(b, 0)); ctx.lineTo(...P(Math.min(xRv, g && g.tb !== undefined ? g.xcReal + D / g.tb : xRv), 0)); ctx.stroke(); ctx.setLineDash([]);
+    }
+    if (isModel && I.hasSlope && g && g.tb !== undefined) {
+      const xc = g.xcReal, xt = g.xcReal + g.HsReal / g.tb;
+      if (I.sd > 0) dimH(b, xc, D, "a = " + fmtLen(I.sd) + " " + ul, true);
+      if (xt + 0.05 * (xRv - xLv) < xRv) dimV(Math.min(xRv - 0.03 * (xRv - xLv), xt + 0.04 * (xRv - xLv)), D, D - g.HsReal, "h = " + fmtLen(I.sh) + " " + ul);
+      const [qx, qy] = P(0.5 * (xc + xt), D - 0.5 * g.HsReal);
+      ctx.textAlign = "left"; ctx.fillText(I.sa + "°", qx + 8, qy);
+    }
+    // scale bar in display units
+    const spanDisp = fromSI(xRv - xLv, "len"), sbd = niceLen(spanDisp * 0.2), sbl = toSI(sbd, "len");
+    const [sx0, sy] = P(xRv - sbl - (xRv - xLv) * 0.03, -Hd);
+    const sy2 = Math.min(sy - 10, H0 - 10);
+    ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx0, sy2); ctx.lineTo(sx0 + sbl * sc, sy2); ctx.stroke();
+    ctx.fillStyle = ink; ctx.textAlign = "center"; ctx.fillText(sbd + " " + ul, sx0 + sbl * sc / 2, sy2 - 5);
+    if (anim) drawGauge(AS);
+    drawLegend();
+  }
+  /* ================= collapse animation =================
+     Stage 1: the load rises to the lower bound (safe). Stage 2: it rises through the range where collapse
+     must occur. Stage 3: the soil and footing move along the upper-bound mechanism, exaggerated.
+     Limit analysis treats the soil as rigid before collapse, so nothing moves in stages 1 and 2. */
+  const T1 = 3.0, T2 = 4.4, T3 = 8.0, TEND = 9.2;
+  let animT = 0, animPlaying = false, animRaf = 0, animLast = 0;
+  const ease = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  function animState(I) {
+    const b = bounds(), qa = appliedPressure(isStale() ? result.inputs : S), fs = S.FS > 0 ? S.FS : 3;
+    const f = (result.dlo && result.dlo.footing) || { u: 0, v: -1, w: 0 };
+    const t = animT;
+    let q, stage, d = 0;
+    if (t < T1) { q = ease(t / T1) * b.lbS; stage = 1; }
+    else if (t < T2) { q = b.lbS + (t - T1) / (T2 - T1) * (b.ubS - b.lbS); stage = 2; }
+    else { q = b.ubS; stage = 3; d = ease(Math.min(1, (t - T2) / (T3 - T2))); }
+    const grid = animGrid(I);
+    return { q, stage, qa, qall: b.lbS / fs, qlb: b.lbS, qub: b.ubS, frac: q / Math.max(b.ubS, 1e-9), d: d * grid.scale, dn: d, fu: f.u, fv: f.v, fw: f.w, grid };
+  }
+  // velocity of soil at (x, y) from the upper-bound mechanism (mirrored for a half model)
+  function soilVel(x, y) {
+    const yy = Math.min(y, -1e-7);
+    if (result.sym && x < 0) { const v = FELA.dloVelocity(result.dlo, -x, yy); return [-v[0], v[1]]; }
+    return FELA.dloVelocity(result.dlo, x, yy);
+  }
+  function animGrid(I) {
+    if (result._anim) return result._anim;
+    const fr = viewFrame(I), m = engineModel(I), D = m.D, g = fr.g;
+    const drop = (x) => (g && g.tb !== undefined && x > 0 ? g.drop(x) : 0);
+    const span = fr.xR - fr.xL, depth = fr.H + D;
+    const nc = 130, nr = Math.max(24, Math.min(100, Math.round(nc * depth / span)));
+    const xs = [], ys = [];
+    for (let i = 0; i <= nc; i++) xs.push(fr.xL + span * i / nc);
+    for (let j = 0; j <= nr; j++) ys.push(D - depth * j / nr);
+    const vx = new Float32Array((nc + 1) * (nr + 1)), vy = new Float32Array((nc + 1) * (nr + 1));
+    let vmax = 0;
+    for (let j = 0; j <= nr; j++) for (let i = 0; i <= nc; i++) {
+      const v = soilVel(xs[i], ys[j]), k = j * (nc + 1) + i;
+      vx[k] = v[0]; vy[k] = v[1]; vmax = Math.max(vmax, Math.hypot(v[0], v[1]));
+    }
+    const layerTop = []; let top = 0; m.layers.forEach((L) => { layerTop.push(top); top = L.bottom; });
+    const layerOf = (depthBelowTop) => { let li = 0; while (li < m.layers.length - 1 && depthBelowTop > m.layers[li].bottom) li++; return li; };
+    const cell = new Int8Array(nc * nr).fill(-1);
+    for (let j = 0; j < nr; j++) for (let i = 0; i < nc; i++) {
+      const cx = 0.5 * (xs[i] + xs[i + 1]), cy = 0.5 * (ys[j] + ys[j + 1]);
+      const gy = Math.max(D - drop(xs[i]), D - drop(xs[i + 1]), D - drop(cx));
+      if (ys[j + 1] <= gy + 1e-9) cell[j * nc + i] = layerOf(Math.max(0, D - Math.max(cy, ys[j + 1])));
+    }
+    // ground surface: sampled finely, with its own velocities
+    const surf = [];
+    for (let i = 0; i <= 2 * nc; i++) { const x = fr.xL + span * i / (2 * nc), y = D - drop(x), v = soilVel(x, y); surf.push([x, y, v[0], v[1]]); }
+    const f = (result.dlo && result.dlo.footing) || { u: 0, v: -1, w: 0 };
+    const scale = Math.max(0.16 * I.B, 0.035 * span) / Math.max(vmax, Math.hypot(f.u, f.v), 1e-9);
+    result._anim = { nc, nr, xs, ys, vx, vy, cell, surf, scale };
+    return result._anim;
+  }
+  function mixHex(a, b, t) {
+    const p = (h) => { h = h.replace("#", ""); if (h.length === 3) h = h.split("").map((c) => c + c).join(""); return [0, 2, 4].map((k) => parseInt(h.slice(k, k + 2), 16)); };
+    const A = p(a), B = p(b);
+    return "rgb(" + A.map((v, k) => Math.round(v * t + B[k] * (1 - t))).join(",") + ")";
+  }
+  function drawAnimSoil(ctx, P, I, m, fr, AS) {
+    const G = AS.grid, d = AS.d, nc = G.nc;
+    // clip to the deformed ground surface so the slope face stays clean
+    ctx.save(); ctx.beginPath();
+    G.surf.forEach(([x, y, u, v], k) => { const [px, py] = P(x + d * u, y + d * v); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+    { const L = G.surf[G.surf.length - 1], F = G.surf[0], yb = G.ys[G.nr] - 1; ctx.lineTo(...P(L[0] + 1e3, L[1])); ctx.lineTo(...P(L[0] + 1e3, yb)); ctx.lineTo(...P(F[0] - 1e3, yb)); ctx.lineTo(...P(F[0] - 1e3, F[1])); }
+    ctx.closePath(); ctx.clip();
+    const at = (i, j) => { const k = j * (nc + 1) + i; return P(G.xs[i] + d * G.vx[k], G.ys[j] + d * G.vy[k]); };
+    // cells grouped by layer colour, one path per colour; a hairline stroke hides seams
+    const byLayer = new Map();
+    for (let j = 0; j < G.nr; j++) for (let i = 0; i < nc; i++) {
+      const li = G.cell[j * nc + i]; if (li < 0) continue;
+      if (!byLayer.has(li)) byLayer.set(li, new Path2D());
+      const p = byLayer.get(li), a = at(i, j), b2 = at(i + 1, j), c = at(i + 1, j + 1), e = at(i, j + 1);
+      p.moveTo(a[0], a[1]); p.lineTo(b2[0], b2[1]); p.lineTo(c[0], c[1]); p.lineTo(e[0], e[1]); p.closePath();
+    }
+    const bg = css("--plot-bg");
+    byLayer.forEach((path, li) => {
+      const col = mixHex(LAYER_COLORS[li % LAYER_COLORS.length], bg, 0.6);
+      ctx.fillStyle = col; ctx.strokeStyle = col; ctx.lineWidth = 0.7;
+      ctx.fill(path); ctx.stroke(path);
+    });
+    // survey lines that were straight before collapse show how the soil distorts
+    ctx.strokeStyle = css("--muted"); ctx.lineWidth = 0.8; ctx.globalAlpha = 0.55;
+    const inside = (i, j) => i >= 0 && j >= 0 && i < nc && j < G.nr && G.cell[j * nc + i] >= 0;
+    const rowStep = Math.max(3, Math.round(G.nr / 14)), colStep = Math.max(4, Math.round(nc / 22));
+    ctx.beginPath();
+    for (let j = rowStep; j < G.nr; j += rowStep) for (let i = 0; i < nc; i++) if (inside(i, j) || inside(i, j - 1)) { const a = at(i, j), b2 = at(i + 1, j); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+    for (let i = colStep; i < nc; i += colStep) for (let j = 0; j < G.nr; j++) if (inside(i, j) || inside(i - 1, j)) { const a = at(i, j), b2 = at(i, j + 1); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.restore();
+    // deformed ground surface
+    ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.5; ctx.beginPath();
+    G.surf.forEach(([x, y, u, v], k) => { const [px, py] = P(x + d * u, y + d * v); if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+    ctx.stroke();
+  }
+  function drawGauge(AS) {
+    const stageTxt = AS.stage === 1 ? (AS.q < AS.qa ? "Loading: below your applied pressure" : "Loading: safe, below the lower bound")
+      : AS.stage === 2 ? "Loading: collapse happens somewhere in this range" : "Collapse: the footing " + motionText({ u: AS.fu, v: AS.fv, w: AS.fw });
+    const st = $("animStage"); st.textContent = stageTxt; st.className = "st" + (AS.stage > 1 ? " s" + AS.stage : "");
+    $("animQ").textContent = "Bearing pressure q = " + fmtP(AS.q) + " " + unit("stress") + (AS.qa > 0 ? " (" + fmt(AS.q / AS.qa, 2) + " × applied)" : "");
+    const svg = $("animGauge"), w = svg.clientWidth || 500, y = 10;
+    const qmax = Math.max(AS.qub, AS.qa) * 1.06, X = (q) => 2 + (w - 4) * Math.min(1, q / qmax);
+    const fill = css(AS.stage === 1 ? "--accent" : AS.stage === 2 ? "--warn" : "--bad");
+    let h = `<rect x="2" y="${y - 4}" width="${w - 4}" height="8" rx="2" fill="${css("--line-soft")}"/><rect x="2" y="${y - 4}" width="${Math.max(0, X(AS.q) - 2)}" height="8" rx="2" fill="${fill}"/>`;
+    const tick = (q, col, lab, anchor) => `<line x1="${X(q)}" x2="${X(q)}" y1="${y - 8}" y2="${y + 8}" stroke="${col}" stroke-width="2"/><text x="${X(q)}" y="${y + 20}" fill="${col}" font-size="11.5" font-family="Barlow, sans-serif" text-anchor="${anchor}">${lab}</text>`;
+    const near = AS.qa > 0 && Math.abs(X(AS.qa) - X(AS.qlb)) < 60;
+    if (AS.qa > 0) h += tick(AS.qa, css("--ink"), "applied", near && AS.qa < AS.qlb ? "end" : "middle");
+    h += tick(AS.qlb, css("--lb"), "LB", near && AS.qa < AS.qlb ? "start" : "end") + tick(AS.qub, css("--ub"), "UB", "start");
+    svg.setAttribute("viewBox", `0 0 ${w} 30`); svg.innerHTML = h;
+  }
+  function animFrame(ts) {
+    if (!animPlaying) return;
+    const dt = animLast ? Math.min(0.1, (ts - animLast) / 1000) : 0;
+    animLast = ts; animT += dt;
+    if (animT >= TEND) { animT = TEND; animPlaying = false; }
+    drawCurrent(); animUi();
+    if (animPlaying) animRaf = requestAnimationFrame(animFrame);
+  }
+  function animUi() {
+    $("animbar").hidden = view !== "anim" || !result;
+    $("animinfo").hidden = view !== "anim" || !result;
+    $("animPlay").textContent = animPlaying ? "Pause" : (animT >= TEND ? "Replay" : "Play");
+    $("animScrub").value = Math.round(animT / TEND * 1000);
+    $("animLabel").textContent = animT < T1 ? "Loading" : animT < T2 ? "Collapse range" : "Collapse (motion exaggerated)";
+  }
+  function animStart() {
+    animStop();
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { animT = TEND; animUi(); return; }
+    animT = 0; animPlaying = true; animLast = 0; animRaf = requestAnimationFrame(animFrame); animUi();
+  }
+  function animStop() { animPlaying = false; cancelAnimationFrame(animRaf); animLast = 0; animUi(); }
+  $("animPlay").addEventListener("click", () => {
+    if (animPlaying) { animStop(); return; }
+    if (animT >= TEND) animT = 0;
+    animPlaying = true; animLast = 0; animRaf = requestAnimationFrame(animFrame); animUi();
+  });
+  $("animScrub").addEventListener("input", (e) => { const v = +e.target.value; animStop(); animT = v / 1000 * TEND; drawCurrent(); animUi(); });
+
+  function niceLen(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const k of [5, 2, 1]) if (k * p <= v) return k * p; return p; }
+  function drawField(ctx, P, sc) {
+    const r = result, mesh = r.mesh, sg = r.sym ? [1, -1] : [1];
+    const tri = (X, col, stroke) => {
+      for (const s of sg) {
+        ctx.beginPath();
+        ctx.moveTo(...P(s * X[0], X[1])); ctx.lineTo(...P(s * X[2], X[3])); ctx.lineTo(...P(s * X[4], X[5])); ctx.closePath();
+        if (col) { ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = col; ctx.lineWidth = 0.5; ctx.stroke(); }
+        if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 0.4; ctx.stroke(); }
+      }
+    };
+    if (view === "plastic" && r.lb && r.lb.util) {
+      // smooth the element-by-element utilisation by averaging at shared vertices
+      const acc = new Map(), kx = (x, y) => Math.round(x * 1e5) + ":" + Math.round(y * 1e5);
+      for (let e = 0; e < mesh.nE; e++) for (let i = 0; i < 3; i++) {
+        const k = kx(mesh.XY[e][2 * i], mesh.XY[e][2 * i + 1]), a = acc.get(k) || [0, 0];
+        a[0] += r.lb.util[e * 3 + i]; a[1]++; acc.set(k, a);
+      }
+      for (let e = 0; e < mesh.nE; e++) {
+        let u = 0;
+        for (let i = 0; i < 3; i++) { const a = acc.get(kx(mesh.XY[e][2 * i], mesh.XY[e][2 * i + 1])); u += a[0] / a[1]; }
+        tri(mesh.XY[e], ramp(Math.pow(u / 3, 3)));
+      }
+      const vg = r.velGrid;
+      if (vg && vg.arrows && vg.amax > 0) {
+        const Lmax = 0.9 * vg.cell * sc, ink = css("--ink");
+        ctx.strokeStyle = ink; ctx.fillStyle = ink; ctx.lineWidth = 1.1;
+        vg.arrows.forEach(([x, y, u, v]) => {
+          const m = Math.hypot(u, v) / vg.amax;
+          if (m < 0.04) return;
+          for (const s of sg) {
+            const [px, py] = P(s * x, y);
+            const len = Math.max(4, Lmax * m), dx = s * u / Math.hypot(u, v), dy = -v / Math.hypot(u, v);
+            const x0 = px - dx * len / 2, y0 = py - dy * len / 2, x1 = px + dx * len / 2, y1 = py + dy * len / 2;
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+            const hs = Math.min(5, 0.35 * len);
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - dx * hs - dy * hs * 0.6, y1 - dy * hs + dx * hs * 0.6); ctx.lineTo(x1 - dx * hs + dy * hs * 0.6, y1 - dy * hs - dx * hs * 0.6); ctx.closePath(); ctx.fill();
+          }
+        });
+      }
+    } else if (view === "mesh") {
+      const st = css("--muted");
+      for (let e = 0; e < mesh.nE; e++) tri(mesh.XY[e], null, st);
+    } else if (view === "diss" && r.ub && r.ub.strain) {
+      let mx = 0; for (let e = 0; e < mesh.nE; e++) mx = Math.max(mx, r.ub.strain[e]);
+      for (let e = 0; e < mesh.nE; e++) tri(mesh.XY[e], ramp(Math.sqrt(r.ub.strain[e] / (mx || 1))));
+    } else if (view === "mech") {
+      const g = r.velGrid, cw = g.W / g.nx, ch = g.H / g.ny;
+      for (let j = 0; j < g.ny; j++) for (let i = 0; i < g.nx; i++) {
+        const v = g.g[j * g.nx + i] / (g.vmax || 1);
+        if (v < 0.003) continue;
+        ctx.fillStyle = ramp(v);
+        for (const s of sg) {
+          const x = s > 0 ? g.xL + i * cw : -(g.xL + (i + 1) * cw);
+          const [px, py] = P(x, -j * ch);
+          ctx.fillRect(px, py, cw * sc + 0.6, ch * sc + 0.6);
+        }
+      }
+      ctx.strokeStyle = css("--ink");
+      r.dlo.lines.forEach((l) => {
+        const a = l.m / r.dlo.jmax; if (a < 0.03) return;
+        ctx.globalAlpha = Math.min(0.9, 0.25 + 0.75 * a); ctx.lineWidth = 0.6 + 1.6 * a;
+        for (const s of sg) { ctx.beginPath(); ctx.moveTo(...P(s * l.A[0], l.A[1])); ctx.lineTo(...P(s * l.C[0], l.C[1])); ctx.stroke(); }
+      });
+      ctx.globalAlpha = 1;
+    }
+  }
+  function drawLegend() {
+    const el = $("legend"), I = drawnInputs();
+    const grad = `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1].map((t) => ramp(t)).join(",")})`;
+    const bar = `<span class="ramp" style="background:${grad}"></span>`;
+    const isModel = view === "model" || !result;
+    const surNote = !isModel && I.D > 0 ? `<span>Hatched: soil above the footing base, applied as a surcharge (its weight counts, its strength is ignored).</span>` : "";
+    const layerNote = !isModel && I.layers.length > 1 ? `<span>Dashed lines: layer boundaries.</span>` : "";
+    const staleNote = !isModel && isStale() ? `<span style="color:var(--warn)">Showing the previous run; the inputs have changed since.</span>` : "";
+    if (isModel) {
+      const symNote = I.hasSlope || (I.Hl || 0) !== 0 || (I.ec || 0) !== 0 ? "The full section is analysed because the load or ground is not symmetric." : "A half section is analysed with symmetry about the centreline; the full section is shown.";
+      el.innerHTML = `<span>${symNote}</span>` + (I.hasWT ? `<span style="color:var(--water)">▽ water table</span>` : "");
+    } else if (view === "mech") el.innerHTML = staleNote + `<span>Soil velocity at collapse</span><span>still</span>${bar}<span>as fast as the footing</span><span>Black lines: slip surfaces, darker = larger jump.</span>` + layerNote + surNote;
+    else if (view === "anim") el.innerHTML = staleNote + `<span>The load rises to the lower bound, then through the range where collapse must occur; the soil then moves along the upper-bound mechanism. Limit analysis treats soil as rigid until collapse, so nothing moves before then. Motion is exaggerated.</span><span>Grey lines were straight before collapse.</span>` + (I.D > 0 ? `<span>Soil above the footing base is a surcharge in the analysis; here it moves with the soil below it.</span>` : "");
+    else if (view === "plastic") el.innerHTML = staleNote + `<span>How close the lower-bound stresses are to failure</span><span>below yield</span>${bar}<span>at yield</span><span>Arrows: soil velocity at collapse (upper bound), length ∝ speed.</span>` + layerNote + surNote;
+    else if (view === "mesh") el.innerHTML = staleNote + `<span>${fmt(result.mesh.nE)} triangles${result.sym ? " per half" : ""}; fans at the footing edges, refined along the mechanism.</span>` + layerNote + surNote;
+    else if (view === "diss") el.innerHTML = staleNote + `<span>Plastic shear strain rate (finite element upper bound)</span><span>low</span>${bar}<span>high</span>` + layerNote + surNote;
+  }
+  let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { drawCurrent(); drawBar(); }, 120); });
+
+  /* ================= boot ================= */
+  renderForm(); buildTabs(); renderResults(); drawCurrent();
+  (async () => {
+    try {
+      const b64 = $("wasm").textContent.trim(), bin = atob(b64), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      wasmBytes = bytes;
+      $("wasm").textContent = "";
+      setStatus("Ready. The example is loaded; press Run limit analysis.");
+    } catch (e) {
+      console.error(e);
+      setStatus("The solver could not be loaded in this browser: " + (e && e.message ? e.message : e), true);
+    }
+  })();
+  try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { drawCurrent(); drawBar(); }); } catch (e) { /* older browsers */ }
+})();
+</script>
