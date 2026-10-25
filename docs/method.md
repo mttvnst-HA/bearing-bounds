@@ -74,6 +74,8 @@ Standard mesh: lifted 32-sided yield polygon, 2 adaptive cycles, 6-node finite e
 | Strength factor of safety at half the Prandtl load (exact 2.0) | 2.0 | 0.990 | 1.013 | new |
 | Circular, rough, undrained, axisymmetric (Nc = 6.05, Eason and Shield) | 605 | 0.968 | 1.048 | new |
 
+Frictional circular footings have no exact reference here. Two consistency checks (axisymmetric, about 650 elements): a weightless smooth circle at φ′ = 30° with surcharge gives N_q from 25.8 to 34.1, which brackets the usual estimate of about 29 (strip 18.4 × Vesić s_q = 1.58); a rough circle on weighty sand at φ′ = 30° gives N_γ (on ½γB) from 12.1 to 20.1. The upper bound is loose for frictional self-weight. These frictional axisymmetric results need the independent review in the backlog before design use.
+
 The eccentric lower bound sits slightly above the effective-width estimate, consistent with published limit-analysis studies that find the effective-width method slightly conservative. A Standard run of one of these cases now takes 2 to 7 minutes on a desktop (before: 1 to 2).
 
 ## Review history
