@@ -54,6 +54,27 @@ const check = (name, ok, extra) => { if (!ok) fails++; console.log(`${ok ? "ok  
   check("invalid eccentricity is flagged on the field", (await p.$eval("#ec", (e) => e.getAttribute("aria-invalid"))) === "true");
   await p.fill("#ec", "0");
 
+  // circular footing: axisymmetric option, and its conditions
+  await p.click("#ftype button:nth-child(4)");
+  check("axisymmetric option shown for a circular footing", !(await p.$eval("#wrap-axi", (e) => e.hidden)));
+  await p.fill("#Hl", "10"); await p.click("#go");
+  check("axisymmetric run with H is flagged", (await p.$eval("#axi", (e) => e.getAttribute("aria-invalid"))) === "true");
+  await p.fill("#Hl", "0");
+  await p.click("#ftype button:nth-child(1)");
+  check("axisymmetric option hidden for a strip", await p.$eval("#wrap-axi", (e) => e.hidden));
+
+  // sliding mode: V held, H increased
+  await p.click("#lmode button:nth-child(3)");
+  await p.click("#go");
+  check("sliding without H is flagged", (await p.$eval("#Hl", (e) => e.getAttribute("aria-invalid"))) === "true");
+  await p.fill("#Hl", "5"); await p.click("#go");
+  await p.waitForFunction(() => /Finished|stopped|crashed/.test(document.getElementById("status").textContent), null, { timeout: 240000 });
+  check("sliding run finishes", /Finished/.test(await txt("status")), await txt("status"));
+  check("sliding answer is a factor of safety on H", /on H/.test(await txt("answer")), await txt("answer"));
+  const hl = parseFloat((await txt("fLB")).replace(/,/g, "")), hu = parseFloat((await txt("fUB")).replace(/,/g, ""));
+  check("sliding lower bound below upper bound", hl > 0 && hl <= hu, hl + " / " + hu);
+  await p.click("#lmode button:nth-child(1)"); await p.fill("#Hl", "0");
+
   // no horizontal scrolling at phone width
   await p.setViewportSize({ width: 390, height: 900 }); await p.waitForTimeout(300);
   check("no horizontal page scroll at 390 px", (await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0);

@@ -636,11 +636,11 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
           </div>
           <div class="row three">
             ${L.drained ? `<label class="f"><span>Dilation ψ′ (deg)</span><input id="lpsi${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="= φ′" value="${v("psi")}"></label>`
-                        : `<label class="f"><span>sᵤ compression ÷ sᵤ</span><input id="lrc${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("rc")}"></label>
-                           <label class="f"><span>sᵤ extension ÷ sᵤ</span><input id="lre${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("re")}"></label>`}
-            <label class="f"><span>Tension cut-off (${unit("stress")})</span><input id="lkt${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="none" value="${v("kt")}"></label>
+                        : `<label class="f"><span>sᵤ,c ÷ sᵤ</span><input id="lrc${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("rc")}"></label>
+                           <label class="f"><span>sᵤ,e ÷ sᵤ</span><input id="lre${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("re")}"></label>`}
+            <label class="f"><span>Tensile limit (${unit("stress")})</span><input id="lkt${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="none" value="${v("kt")}"></label>
           </div>
-          <p class="hint">${L.drained ? "Leave ψ′ blank for associated flow. A smaller ψ′ uses Davis's reduced strength (c* = β c′, tan φ* = β tan φ′), an estimate of the effect of non-associated flow." : "sᵤ is the plane-strain (direct simple shear) strength; triaxial compression sᵤ overestimates plane-strain capacity. The ratios, if given, make the strength anisotropic (Davis and Christian ellipse)."} The tension cut-off limits the major principal stress to the value given (0 = no tension); blank means none.</p>
+          <p class="hint">${L.drained ? "Leave ψ′ blank for associated flow. A smaller ψ′ uses Davis's reduced strength (c* = β c′, tan φ* = β tan φ′), an estimate of the effect of non-associated flow." : "sᵤ is the plane-strain (direct simple shear) strength; triaxial compression sᵤ overestimates plane-strain capacity. The ratios sᵤ,c ÷ sᵤ (triaxial compression) and sᵤ,e ÷ sᵤ (triaxial extension), if given, make the strength anisotropic (Davis and Christian ellipse)."} The tensile limit (a tension cut-off) caps the major principal stress to the value given (0 = no tension); blank means none.</p>
           <div class="lfoot">
             <label class="f" style="flex:1"><span>γ<sub>sat</sub> (${unit("gam")})</span><input id="ls${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("gammaSat")}"></label>
             ${S.layers.length > 1 ? `<button type="button" class="icon-btn" data-del="${i}">Remove layer</button>` : ""}

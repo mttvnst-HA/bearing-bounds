@@ -519,9 +519,17 @@
       } finally { model.dispose(); }
     };
     const good = (q) => q.pss === 2 && (q.status === 7 || q.status === 15) && !(q.pinf > 1e-6);
+    // A feasible point that is not proven optimal is still a valid bound, but the interior-point solver can stop
+    // early (status 15); its point is usually as good as the optimum, but a lower bound of zero or less is
+    // suspect. Retry with crossover in that case (or when no valid point came back) and keep the better one.
+    const better = (q, r0) => good(q) && (!good(r0) || (sense === "max" ? q.obj > r0.obj : q.obj < r0.obj));
     let r = attempt(opts.crossover || "off"), crossover = false;
-    if (!good(r) && r.status !== 8 && r.status !== 9 && r.status !== 10) { r = attempt("on"); crossover = true; }
+    if (r.status !== 8 && r.status !== 9 && r.status !== 10 && (!good(r) || (r.status !== 7 && sense === "max" && !(r.obj > 0)))) {
+      const r2 = attempt("on"); crossover = true;
+      if (better(r2, r) || (!good(r) && r2.status !== -1)) r = r2;
+    }
     // interior point can fail outright on badly scaled problems; dual simplex is slower but robust
+    // (simplex only when interior point failed outright: on these large LPs it is very slow)
     if (r.status === -1) r = attempt("off", "simplex");
     return { status: r.status, optimal: r.status === 7, valid: good(r), crossover: crossover, pinf: r.pinf, obj: r.obj, x: good(r) ? r.x : null, y: good(r) ? r.y : null, nVars: data.numCols, nRows: data.numRows };
   }
@@ -623,7 +631,7 @@
       const cone = liftedCone(opts.nu), aux = []; cp = cone.cp;
       for (let k = 0; k < cone.nAux; k++) aux.push(lp.addVar(-Infinity, Infinity, 0));
       cone.rows.forEach((r) => {
-        const [cs, k0] = coneRowSigma(r.a, cn, cone.cp), idx = [ix, iy, it], val = cs.slice();
+        const [cs, k0] = coneRowSigma(r.a, cn, cone.cp), idx = [ix, iy, it], val = cs.slice(0, 3);
         Object.keys(r.a).forEach((key) => { if (isAux(key)) { idx.push(aux[+key]); val.push(r.a[key]); } });
         lp.addRow(idx, val, r.lo === -Infinity ? -Infinity : r.lo - k0, r.up - k0);
       });
