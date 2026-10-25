@@ -586,66 +586,112 @@
     return o;
   }
   const isAux = (key) => key !== "x1" && key !== "x2" && key !== "t";
-  // a cone row on the stress components: x1 = sx - sy, x2 = 2 tau, t = f (2c cos(phi) - (sx + sy) sin(phi));
-  // returns [[c_sx, c_sy, c_tau], constant to move to the right-hand side]
-  function coneRowSigma(a, sinp, twoCcos, f) {
+  // A yield "cone" is the set ||(x1, x2)|| <= t with x1 = k1 (sx - sy) + c1, x2 = 2 tau, t = ct - st (sx + sy).
+  //   Mohr-Coulomb:                k1 = 1, c1 = 0, ct = 2c cos(phi), st = sin(phi)
+  //   tension cut-off (s1 <= kt):  k1 = 1, c1 = 0, ct = 2 kt, st = 1
+  //   anisotropic undrained strength (Davis and Christian 1971): an ellipse in ((sx - sy)/2, tau) with centre
+  //     X0 = su (rc - re)/2, semi-axes a = su (rc + re)/2 and su, where su is the plane-strain (simple shear)
+  //     strength and rc, re are the compression and extension strengths divided by su:
+  //     k1 = su / a, c1 = -2 X0 k1, ct = 2 su, st = 0
+  // The soil at a point is the intersection of its cones.
+  function conesAt(model, layer, y) {
+    const st = cphiAt(model, layer, y), out = [];
+    const an = layer.aniso;
+    if (an && st.phi < 1e-12 && (Math.abs(an.rc - 1) > 1e-9 || Math.abs(an.re - 1) > 1e-9)) {
+      const k1 = 2 / (an.rc + an.re);
+      out.push({ k1: k1, c1: -st.c * (an.rc - an.re) * k1, ct: 2 * st.c, st: 0 });
+    } else out.push({ k1: 1, c1: 0, ct: 2 * st.c * Math.cos(st.phi), st: Math.sin(st.phi) });
+    if (layer.kt != null && (st.phi < 1e-12 || layer.kt < st.c / Math.tan(st.phi))) out.push({ k1: 1, c1: 0, ct: 2 * Math.max(0, layer.kt), st: 1 });
+    return out;
+  }
+  // a lifted-cone row on the stress components with t scaled by f; returns [[c_sx, c_sy, c_tau], constant]
+  function coneRowSigma(a, cone, f) {
     const x1 = a.x1 || 0, x2 = a.x2 || 0, t = a.t || 0;
-    return [[x1 - t * f * sinp, -x1 - t * f * sinp, 2 * x2], t * f * twoCcos];
+    return [[x1 * cone.k1 - t * f * cone.st, -x1 * cone.k1 - t * f * cone.st, 2 * x2], x1 * cone.c1 + t * f * cone.ct];
   }
-  // lower bound: inscribed yield condition at one stress point (variables ix, iy, it); returns the
-  // factor on the Mohr circle radius that the linearisation guarantees
-  function addYieldLB(lp, ix, iy, it, phi, c, opts) {
-    const sinp = Math.sin(phi), tc = 2 * c * Math.cos(phi);
-    if (!opts.nu) {
-      const pg = polygon(opts.p), sp = sinp * pg.cp, rhs = tc * pg.cp;
-      for (let k = 0; k < pg.p; k++) lp.addRow([ix, iy, it], [pg.co[k] + sp, -pg.co[k] + sp, 2 * pg.si[k]], -Infinity, rhs);
-      return pg.cp;
-    }
-    const cone = liftedCone(opts.nu), aux = [];
-    for (let k = 0; k < cone.nAux; k++) aux.push(lp.addVar(-Infinity, Infinity, 0));
-    cone.rows.forEach((r) => {
-      const [cs, k0] = coneRowSigma(r.a, sinp, tc, cone.cp), idx = [ix, iy, it], val = cs.slice();
-      Object.keys(r.a).forEach((key) => { if (isAux(key)) { idx.push(aux[+key]); val.push(r.a[key]); } });
-      lp.addRow(idx, val, r.lo === -Infinity ? -Infinity : r.lo - k0, r.up - k0);
-    });
-    return cone.cp;
-  }
-  // upper bound: plastic strain rates eps = [[idx, val] for eps_x, eps_y, gamma_xy] must be a non-negative
-  // combination of the outward normals of the circumscribed yield surface (the polygon, or the dual of the
-  // lifted polygon). The variables' costs, already multiplied by `area`, give the dissipation. Returns
-  // { vars, lam } where lam lists [variable, weight] for a plastic strain measure.
-  function addFlowUB(lp, eps, phi, c, area, opts) {
-    const sinp = Math.sin(phi), tc = 2 * c * Math.cos(phi), vars = [], rowsS = [[], [], []];
-    let lam = [];
-    if (!opts.nu) {
-      const pg = polygon(opts.p);
-      for (let k = 0; k < pg.p; k++) {
-        const v = lp.addVar(0, Infinity, tc * area);
-        rowsS[0].push([v, pg.co[k] + sinp]); rowsS[1].push([v, -pg.co[k] + sinp]); rowsS[2].push([v, 2 * pg.si[k]]);
-        vars.push(v); lam.push([v, 2]);
+  // lower bound: inscribed yield conditions at one stress point (variables ix, iy, it); returns the factor on
+  // the cone radius that the linearisation guarantees
+  function addYieldLB(lp, ix, iy, it, cones, opts) {
+    let cp = 1;
+    cones.forEach((cn) => {
+      if (!opts.nu) {
+        const pg = polygon(opts.p); cp = pg.cp;
+        for (let k = 0; k < pg.p; k++) lp.addRow([ix, iy, it], [pg.co[k] * cn.k1 + pg.cp * cn.st, -pg.co[k] * cn.k1 + pg.cp * cn.st, 2 * pg.si[k]], -Infinity, pg.cp * cn.ct - pg.co[k] * cn.c1);
+        return;
       }
-    } else {
+      const cone = liftedCone(opts.nu), aux = []; cp = cone.cp;
+      for (let k = 0; k < cone.nAux; k++) aux.push(lp.addVar(-Infinity, Infinity, 0));
+      cone.rows.forEach((r) => {
+        const [cs, k0] = coneRowSigma(r.a, cn, cone.cp), idx = [ix, iy, it], val = cs.slice();
+        Object.keys(r.a).forEach((key) => { if (isAux(key)) { idx.push(aux[+key]); val.push(r.a[key]); } });
+        lp.addRow(idx, val, r.lo === -Infinity ? -Infinity : r.lo - k0, r.up - k0);
+      });
+    });
+    return cp;
+  }
+  // exact conditions for a stress state with tau = 0: sx = (var ix or none) + cx, sy = (var iy or none) + cy
+  function addYieldTau0(lp, ix, cx, iy, cy, cones) {
+    cones.forEach((cn) => {
+      [[cn.k1 + cn.st, -cn.k1 + cn.st, cn.ct - cn.c1], [-cn.k1 + cn.st, cn.k1 + cn.st, cn.ct + cn.c1]].forEach(([ax, ay, r]) => {
+        const idx = [], val = [];
+        if (ix != null) { idx.push(ix); val.push(ax); }
+        if (iy != null) { idx.push(iy); val.push(ay); }
+        lp.addRow(idx, val, -Infinity, r - ax * cx - ay * cy);
+      });
+    });
+  }
+  // upper bound: plastic strain rates eps = [[idx, val] for eps_x, eps_y, gamma_xy] must be a sum over the
+  // cones of non-negative combinations of their outward normals (circumscribed polygon, or the dual of the
+  // lifted polygon). Costs, already multiplied by `area`, give the dissipation. Returns { vars, lam } where
+  // lam lists [variable, weight] for a plastic strain measure.
+  function addFlowUB(lp, eps, cones, area, opts) {
+    const vars = [], rowsS = [[], [], []], lam = [];
+    cones.forEach((cn) => {
+      if (!opts.nu) {
+        const pg = polygon(opts.p);
+        for (let k = 0; k < pg.p; k++) {
+          const v = lp.addVar(0, Infinity, (cn.ct - pg.co[k] * cn.c1) * area);
+          rowsS[0].push([v, pg.co[k] * cn.k1 + cn.st]); rowsS[1].push([v, -pg.co[k] * cn.k1 + cn.st]); rowsS[2].push([v, 2 * pg.si[k]]);
+          vars.push(v); lam.push([v, 2]);
+        }
+        return;
+      }
       // support function of {sigma : A sigma + G z <= b} = min b.y over y >= 0 (free for equality rows)
       // with A^T y = eps and G^T y = 0
       const cone = liftedCone(opts.nu), auxRows = [];
       for (let k = 0; k < cone.nAux; k++) auxRows.push([]);
       cone.rows.forEach((r, ri) => {
-        const [cs, k0] = coneRowSigma(r.a, sinp, tc, 1);
-        const v = lp.addVar(r.lo === r.up ? -Infinity : 0, Infinity, -k0 * area);
+        const [cs, k0] = coneRowSigma(r.a, cn, 1);
+        const v = lp.addVar(r.lo === r.up ? -Infinity : 0, Infinity, (r.up - k0) * area);
         for (let q = 0; q < 3; q++) if (cs[q] !== 0) rowsS[q].push([v, cs[q]]);
         Object.keys(r.a).forEach((key) => { if (isAux(key)) auxRows[+key].push([v, r.a[key]]); });
         vars.push(v);
-        if (ri === cone.tRow) lam = [[v, 2]];
+        if (ri === cone.tRow) lam.push([v, 2]);
       });
       auxRows.forEach((ar) => lp.addRow(ar.map((q) => q[0]), ar.map((q) => q[1]), 0, 0));
-    }
+    });
     for (let q = 0; q < 3; q++) lp.addRow(eps[q][0].concat(rowsS[q].map((z) => z[0])), eps[q][1].concat(rowsS[q].map((z) => -z[1])), 0, 0);
     return { vars: vars, lam: lam };
+  }
+  // dissipation per unit slip and unit length on a line with unit tangent t and normal n (velocity jump
+  // measured from the side away from n to the side n points into), for slip along +t and -t, from the
+  // strength of `layer` at level y: the maximum of +/- tau_nt over the yield surface (its c part; the
+  // friction part is carried by the dilation). Also the tensile strength for opening, if any.
+  function lineStrength(model, layer, y, t, n) {
+    const st = cphiAt(model, layer, y), an = layer.aniso;
+    let plus = st.c, minus = st.c;
+    if (an && st.phi < 1e-12) {
+      const lX = t[0] * n[0] - t[1] * n[1], lY = t[0] * n[1] + t[1] * n[0];
+      const R = st.c * Math.hypot((an.rc + an.re) / 2 * lX, lY), m = st.c * (an.rc - an.re) / 2 * lX;
+      plus = R + m; minus = R - m;
+    }
+    const kt = layer.kt != null && (st.phi < 1e-12 || layer.kt < st.c / Math.tan(st.phi)) ? Math.max(0, layer.kt) : null;
+    return { plus: plus, minus: minus, tphi: Math.tan(st.phi), kt: kt };
   }
 
   /* ================= lower bound ================= */
   function lowerBound(highs, model, mesh, mats, opts) {
-    const p = opts.p, nE = mesh.nE, lp = new LP(), g = model.geo, fr = footingFrame(model);
+    const nE = mesh.nE, lp = new LP(), g = model.geo, fr = footingFrame(model);
     for (let k = 0; k < nE * 9; k++) lp.addVar(-Infinity, Infinity, 0);
     const sv = (e, i, k) => (e * 3 + i) * 3 + k;
     for (let e = 0; e < nE; e++) {
@@ -706,8 +752,6 @@
       lp.addRow(hI.concat([Av]), hC.concat([-fr.ref[1]]), fr.fix[1], fr.fix[1]);
       lp.addRow(mI.concat([Av]), mC.map((c) => -c).concat([-fr.ref[2]]), fr.fix[2], fr.fix[2]);
     }
-    const cp = Math.cos(Math.PI / p);
-    const th = []; for (let k = 0; k < p; k++) th.push(2 * Math.PI * (k + 0.5) / p);
     /* Extension of the stress field to the infinite half-space (makes the bound rigorous):
        beside the mesh the field is uniform in x with tau = 0 and geostatic sigma_y under the far ground;
        below the mesh tau = 0 and sigma_x = S (one value) plus equal geostatic increments in sigma_x and
@@ -718,7 +762,6 @@
       const geoL = (y) => model.q0 + sigmaV(model, model.D - y) - sTop;
       const yR = g.groundY(model.xR);
       const geoR = (y) => (yR < -1e-12 ? sigmaV(model, model.D - y) - sigmaV(model, model.D - yR) : model.q0 + sigmaV(model, model.D - y) - sTop);
-      const yieldC = (layer, y) => { const st = cphiAt(model, layer, y); return { sp: Math.sin(st.phi) * cp, rhs: 2 * st.c * Math.cos(st.phi) * cp }; };
       const deeper = model.layers.filter((l) => l.top > model.D + model.H + 1e-9);
       const H = model.H, inc = (L) => -(sigmaV(model, L.top) - sigmaV(model, model.D + H));
       const S = lp.addVar(-Infinity, Infinity, 0);
@@ -730,23 +773,15 @@
           lp.addRow([sv(bd.e, i, 2)], [1], 0, 0);
           if (bd.type !== "base") {
             const geoF = bd.type === "left" ? geoL : geoR;
-            const syExt = -geoF(y), q = yieldC(layer, y);
-            for (let k = 0; k < p; k++) lp.addRow([sv(bd.e, i, 0)], [Math.cos(th[k]) + q.sp], -Infinity, q.rhs - (-Math.cos(th[k]) + q.sp) * syExt);
+            addYieldTau0(lp, sv(bd.e, i, 0), 0, null, -geoF(y), conesAt(model, layer, y));
             if (Math.abs(y + H) < 1e-9 * Math.max(1, H) && !tied[bd.type]) {
               tied[bd.type] = true;
               lp.addRow([S, sv(bd.e, i, 0)], [1, -1], 0, 0);
-              deeper.forEach((L) => {
-                const Dl = inc(L), q2 = yieldC(L, model.D - L.top);
-                for (let k = 0; k < p; k++) lp.addRow([S], [Math.cos(th[k]) + q2.sp], -Infinity, q2.rhs - (-Math.cos(th[k]) + q2.sp) * (-geoF(-H) + Dl) - (Math.cos(th[k]) + q2.sp) * Dl);
-              });
+              deeper.forEach((L) => { const Dl = inc(L); addYieldTau0(lp, S, Dl, null, -geoF(-H) + Dl, conesAt(model, L, model.D - L.top)); });
             }
           } else {
-            const q = yieldC(layer, y);
-            for (let k = 0; k < p; k++) lp.addRow([S, sv(bd.e, i, 1)], [Math.cos(th[k]) + q.sp, -Math.cos(th[k]) + q.sp], -Infinity, q.rhs);
-            deeper.forEach((L) => {
-              const Dl = inc(L), q2 = yieldC(L, model.D - L.top);
-              for (let k = 0; k < p; k++) lp.addRow([S, sv(bd.e, i, 1)], [Math.cos(th[k]) + q2.sp, -Math.cos(th[k]) + q2.sp], -Infinity, q2.rhs - 2 * q2.sp * Dl);
-            });
+            addYieldTau0(lp, S, 0, sv(bd.e, i, 1), 0, conesAt(model, layer, y));
+            deeper.forEach((L) => { const Dl = inc(L); addYieldTau0(lp, S, Dl, sv(bd.e, i, 1), Dl, conesAt(model, L, model.D - L.top)); });
           }
         });
       });
@@ -757,8 +792,7 @@
       const X = mesh.XY[e];
       for (let i = 0; i < 3; i++) {
         yRow[e * 3 + i] = lp.rlo.length;
-        const s = cphiAt(model, mats[e].layer, X[2 * i + 1]);
-        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), s.phi, s.c, opts);
+        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), conesAt(model, mats[e].layer, X[2 * i + 1]), opts);
       }
     }
     yRow[nE * 3] = lp.rlo.length;
@@ -801,28 +835,29 @@
     for (let e = 0; e < nE; e++) {
       const gg = mesh.geo[e];
       for (let i = 0; i < 3; i++) lp.cost[uv(e, i, 1)] += mats[e].gamma * gg.A / 3;
-      const s = cphiAt(model, mats[e].layer, gg.cy);
       const U = [uv(e, 0, 0), uv(e, 1, 0), uv(e, 2, 0)], V = [uv(e, 0, 1), uv(e, 1, 1), uv(e, 2, 1)];
-      flows.push(addFlowUB(lp, [[U, gg.b.slice()], [V, gg.c.slice()], [U.concat(V), gg.c.concat(gg.b)]], s.phi, s.c, gg.A, opts));
+      flows.push(addFlowUB(lp, [[U, gg.b.slice()], [V, gg.c.slice()], [U.concat(V), gg.c.concat(gg.b)]], conesAt(model, mats[e].layer, gg.cy), gg.A, opts));
     }
     const discVars = [];
     mesh.ifaces.forEach((f, fi) => {
       const [tx, ty] = f.t, [nx, ny] = f.n;
       const m1 = mats[f.s1.e].layer, m2 = mats[f.s2.e].layer;
-      let sm;
-      if (m1 === m2) sm = [cphiAt(model, m1, f.P[1]), cphiAt(model, m1, f.Q[1])];
-      else {
-        const A = [cphiAt(model, m1, f.P[1]), cphiAt(model, m1, f.Q[1])], B = [cphiAt(model, m2, f.P[1]), cphiAt(model, m2, f.Q[1])];
+      // a jump on a layer boundary may be taken in either layer: use the weaker one
+      let lay = m1;
+      if (m1 !== m2) {
         const sv0 = model.q0 + sigmaV(model, model.D - f.P[1]) - sigmaV(model, model.D);
-        const tau = (s) => s[0].c + s[1].c + 2 * sv0 * Math.tan(s[0].phi);
-        sm = tau(A) <= tau(B) ? A : B;
+        const tau = (L) => { const a1 = cphiAt(model, L, f.P[1]), a2 = cphiAt(model, L, f.Q[1]); return a1.c + a2.c + 2 * sv0 * Math.tan(a1.phi); };
+        if (tau(m2) < tau(m1)) lay = m2;
       }
-      const tphi = Math.tan(sm[0].phi), c1 = sm[0].c, c2 = sm[1].c;
-      const wts = [f.L / 6 * (2 * c1 + c2), f.L / 6 * (c1 + 2 * c2)];
+      const ls = [lineStrength(model, lay, f.P[1], f.t, f.n), lineStrength(model, lay, f.Q[1], f.t, f.n)];
+      const tphi = ls[0].tphi, w6 = (k, j) => f.L / 6 * (j === 0 ? 2 * ls[0][k] + ls[1][k] : ls[0][k] + 2 * ls[1][k]);
       const dv = [];
       ["tP", "tQ"].forEach((tk, j) => {
-        const dp = lp.addVar(0, Infinity, wts[j]), dm = lp.addVar(0, Infinity, wts[j]);
+        const dp = lp.addVar(0, Infinity, w6("plus", j)), dm = lp.addVar(0, Infinity, w6("minus", j));
         dv.push(dp, dm);
+        // opening beyond dilatancy costs the tensile strength when there is a cut-off (otherwise none allowed)
+        const so = ls[0].kt != null ? lp.addVar(0, Infinity, ls[0].kt * f.L / 2) : null;
+        if (so != null) dv.push(so);
         const idx = [], vt = [], vn = [];
         [[f.s2, 1], [f.s1, -1]].forEach(([s, sg]) => {
           const t = s[tk];
@@ -831,7 +866,7 @@
           vn.push(sg * nx * (1 - t), sg * nx * t, sg * ny * (1 - t), sg * ny * t);
         });
         lp.addRow(idx.concat([dp, dm]), vt.concat([-1, 1]), 0, 0);
-        lp.addRow(idx.concat([dp, dm]), vn.concat([-tphi, -tphi]), 0, 0);
+        lp.addRow(idx.concat([dp, dm], so != null ? [so] : []), vn.concat([-tphi, -tphi], so != null ? [-1] : []), 0, 0);
       });
       discVars.push([fi, dv]);
     });
@@ -914,8 +949,10 @@
     for (let e = 0; e < nE; e++) {
       const gg = mesh.geo[e], el = E[e], b = gg.b, c = gg.c;
       el.md.forEach((m) => (lp.cost[Vv(m)] += mats[e].gamma * gg.A / 3));    // self-weight acts on the mid-side nodes
-      const st = [0, 1, 2].map((j) => cphiAt(model, mats[e].layer, mesh.XY[e][2 * j + 1]));
+      const lay = mats[e].layer, st = [0, 1, 2].map((j) => cphiAt(model, lay, mesh.XY[e][2 * j + 1]));
       const csum = st[0].c + st[1].c + st[2].c;
+      // cone at vertex j with the cohesion replaced by (c_j + sum c)/4 (exact integral of linear times linear)
+      const conesJ = (j) => conesAt(Object.assign({}, model, { D: 0 }), Object.assign({}, lay, { c: (st[j].c + csum) / 4, suGrad: 0, top: 0 }), 0);
       const fl = [];
       for (let j = 0; j < 3; j++) {
         // derivatives of the six shape functions at vertex j
@@ -927,7 +964,7 @@
         }
         const eps = [[nodes.map(U), dx], [nodes.map(Vv), dy], [nodes.map(U).concat(nodes.map(Vv)), dy.concat(dx)]];
         // exact integral of (linear multiplier) x (linear cohesion): weight (c_j + sum c) / 4 on area A / 3
-        fl.push(addFlowUB(lp, eps, st[j].phi, (st[j].c + csum) / 4, gg.A / 3, opts));
+        fl.push(addFlowUB(lp, eps, conesJ(j), gg.A / 3, opts));
       }
       flows.push(fl);
     }
@@ -1086,21 +1123,22 @@
       }
       const L = Math.hypot(C[0] - A[0], C[1] - A[1]);
       const tx = (C[0] - A[0]) / L, ty = (C[1] - A[1]) / L, nx = -ty, ny = tx;
-      const s = cphiAt(model, layer, 0.5 * (A[1] + C[1]));
-      const tphi = Math.tan(s.phi), gc = s.c * L;
-      const p1 = lp.addVar(0, Infinity, gc), p2 = lp.addVar(0, Infinity, gc);
-      const jx1 = tx + tphi * nx, jy1 = ty + tphi * ny, jx2 = -tx + tphi * nx, jy2 = -ty + tphi * ny;
+      // slip along +t and -t with dilation tan(phi), and an opening that costs the tensile strength when the
+      // soil has a cut-off; the jump is the velocity on the n side minus the other side
+      const ls = lineStrength(model, layer, 0.5 * (A[1] + C[1]), [tx, ty], [nx, ny]), tphi = ls.tphi;
+      const vs = [lp.addVar(0, Infinity, ls.plus * L), lp.addVar(0, Infinity, ls.minus * L)];
+      const jl = [[tx + tphi * nx, ty + tphi * ny], [-tx + tphi * nx, -ty + tphi * ny]];
+      if (ls.kt != null) { vs.push(lp.addVar(0, Infinity, ls.kt * L)); jl.push([nx, ny]); }
       const up = ny > 1e-12 ? 1 : (ny < -1e-12 ? -1 : 0);
       const Wt = up !== 0 ? columnWeight(model, A[0], A[1], C[0], C[1]) : 0;
-      lp.cost[p1] += Wt * up * jy1; lp.cost[p2] += Wt * up * jy2;
-      lines.push({ a, c, p1, p2, j: [jx1, jy1, jx2, jy2], up, x1: Math.min(A[0], C[0]), x2: Math.max(A[0], C[0]) });
+      vs.forEach((v, k) => (lp.cost[v] += Wt * up * jl[k][1]));
+      lines.push({ a, c, vs, jl, up, x1: Math.min(A[0], C[0]), x2: Math.max(A[0], C[0]) });
     }
     const rows = nodes.map(() => [[], [], [], []]);
     lines.forEach((ln) => {
       [[ln.a, 1], [ln.c, -1]].forEach(([nd, sg]) => {
         const r = rows[nd];
-        r[0].push(ln.p1, ln.p2); r[1].push(sg * ln.j[0], sg * ln.j[2]);
-        r[2].push(ln.p1, ln.p2); r[3].push(sg * ln.j[1], sg * ln.j[3]);
+        ln.vs.forEach((v, k) => { r[0].push(v); r[1].push(sg * ln.jl[k][0]); r[2].push(v); r[3].push(sg * ln.jl[k][1]); });
       });
     });
     // compatibility: closed loops at interior, side and base nodes; none on the ground or under the
@@ -1125,8 +1163,7 @@
       const iu = [us[0]], cu = [-1], iv = [vs[0]], cv = [-1];
       lines.forEach((ln) => {
         if (ln.up === 0 || xm <= ln.x1 || xm >= ln.x2) return;
-        iu.push(ln.p1, ln.p2); cu.push(ln.up * ln.j[0], ln.up * ln.j[2]);
-        iv.push(ln.p1, ln.p2); cv.push(ln.up * ln.j[1], ln.up * ln.j[3]);
+        ln.vs.forEach((v, k) => { iu.push(v); cu.push(ln.up * ln.jl[k][0]); iv.push(v); cv.push(ln.up * ln.jl[k][1]); });
       });
       lp.addRow(iu, cu, 0, 0); lp.addRow(iv, cv, 0, 0);
     }
@@ -1157,8 +1194,8 @@
       const act = [];
       let jmax = 0;
       lines.forEach((ln) => {
-        const p1 = r.x[ln.p1], p2 = r.x[ln.p2];
-        const jx = ln.j[0] * p1 + ln.j[2] * p2, jy = ln.j[1] * p1 + ln.j[3] * p2;
+        let jx = 0, jy = 0;
+        ln.vs.forEach((v, k) => { jx += ln.jl[k][0] * r.x[v]; jy += ln.jl[k][1] * r.x[v]; });
         const m = Math.hypot(jx, jy);
         if (m > 1e-6) { act.push({ A: nodes[ln.a], C: nodes[ln.c], jx, jy, m, up: ln.up, x1: ln.x1, x2: ln.x2 }); jmax = Math.max(jmax, m); }
       });
