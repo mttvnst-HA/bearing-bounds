@@ -605,9 +605,10 @@
     return out;
   }
   // a lifted-cone row on the stress components with t scaled by f; returns [[c_sx, c_sy, c_tau], constant]
+  // (axisymmetry adds the hoop stress: t = ct - st (sr + sz) - sth s_theta, and a fourth coefficient)
   function coneRowSigma(a, cone, f) {
     const x1 = a.x1 || 0, x2 = a.x2 || 0, t = a.t || 0;
-    return [[x1 * cone.k1 - t * f * cone.st, -x1 * cone.k1 - t * f * cone.st, 2 * x2], x1 * cone.c1 + t * f * cone.ct];
+    return [[x1 * cone.k1 - t * f * cone.st, -x1 * cone.k1 - t * f * cone.st, 2 * x2, -t * f * (cone.sth || 0)], x1 * cone.c1 + t * f * cone.ct];
   }
   // lower bound: inscribed yield conditions at one stress point (variables ix, iy, it); returns the factor on
   // the cone radius that the linearisation guarantees
@@ -645,13 +646,14 @@
   // lifted polygon). Costs, already multiplied by `area`, give the dissipation. Returns { vars, lam } where
   // lam lists [variable, weight] for a plastic strain measure.
   function addFlowUB(lp, eps, cones, area, opts) {
-    const vars = [], rowsS = [[], [], []], lam = [];
+    const nc = eps.length, vars = [], rowsS = [[], [], [], []], lam = [];
     cones.forEach((cn) => {
       if (!opts.nu) {
         const pg = polygon(opts.p);
         for (let k = 0; k < pg.p; k++) {
           const v = lp.addVar(0, Infinity, (cn.ct - pg.co[k] * cn.c1) * area);
           rowsS[0].push([v, pg.co[k] * cn.k1 + cn.st]); rowsS[1].push([v, -pg.co[k] * cn.k1 + cn.st]); rowsS[2].push([v, 2 * pg.si[k]]);
+          if (nc === 4) rowsS[3].push([v, cn.sth || 0]);
           vars.push(v); lam.push([v, 2]);
         }
         return;
@@ -663,14 +665,14 @@
       cone.rows.forEach((r, ri) => {
         const [cs, k0] = coneRowSigma(r.a, cn, 1);
         const v = lp.addVar(r.lo === r.up ? -Infinity : 0, Infinity, (r.up - k0) * area);
-        for (let q = 0; q < 3; q++) if (cs[q] !== 0) rowsS[q].push([v, cs[q]]);
+        for (let q = 0; q < nc; q++) if (cs[q] !== 0) rowsS[q].push([v, cs[q]]);
         Object.keys(r.a).forEach((key) => { if (isAux(key)) auxRows[+key].push([v, r.a[key]]); });
         vars.push(v);
         if (ri === cone.tRow) lam.push([v, 2]);
       });
       auxRows.forEach((ar) => lp.addRow(ar.map((q) => q[0]), ar.map((q) => q[1]), 0, 0));
     });
-    for (let q = 0; q < 3; q++) lp.addRow(eps[q][0].concat(rowsS[q].map((z) => z[0])), eps[q][1].concat(rowsS[q].map((z) => -z[1])), 0, 0);
+    for (let q = 0; q < nc; q++) lp.addRow(eps[q][0].concat(rowsS[q].map((z) => z[0])), eps[q][1].concat(rowsS[q].map((z) => -z[1])), 0, 0);
     return { vars: vars, lam: lam };
   }
   // dissipation per unit slip and unit length on a line with unit tangent t and normal n (velocity jump
@@ -916,6 +918,335 @@
       for (let e = 0; e < nE; e++) { diss[e] /= mesh.geo[e].A; strain[e] /= mesh.geo[e].A; }
       out.vel = vel; out.diss = diss; out.strain = strain;
       out.footing = { u: r.x[u0], v: r.x[v0], w: r.x[w0] };
+    }
+    return out;
+  }
+
+  /* ================= axisymmetric bounds (circular footing, central vertical load, level ground) ================= */
+  // Coordinates: x is the radius r (axis at x = 0), y is up. Full Mohr-Coulomb in three principal stresses:
+  // with s = (sr + sz)/2 and R the in-plane Mohr radius, the hoop stress s_theta is principal and the pairs give
+  //   R <= c cos(phi) - s sin(phi)                                   (in-plane)
+  //   R (1 - sin) <= 2c cos - s_theta (1 + sin) + s (1 - sin)        (s_theta against the minor in-plane stress)
+  //   R (1 + sin) <= 2c cos - s (1 + sin) + s_theta (1 - sin)        (the major in-plane stress against s_theta)
+  // each a cone ||(sr - sz, 2 tau)|| <= t, linearised as in plane strain.
+  function axiConesAt(model, layer, y) {
+    const st = cphiAt(model, layer, y), sn = Math.sin(st.phi), cc = st.c * Math.cos(st.phi);
+    return [{ k1: 1, c1: 0, ct: 2 * cc, st: sn, sth: 0 },
+      { k1: 1, c1: 0, ct: 4 * cc / (1 - sn), st: -1, sth: 2 * (1 + sn) / (1 - sn) },
+      { k1: 1, c1: 0, ct: 4 * cc / (1 + sn), st: 1, sth: -2 * (1 - sn) / (1 + sn) }];
+  }
+  // geostatic effective vertical stress below the base level (tension positive), including the surcharge
+  const sigGeo = (model, y) => -(model.q0 + sigmaV(model, model.D - y) - sigmaV(model, model.D));
+
+  // Lower bound. The stress is split into the geostatic part (0, sz_g(y), 0, 0) and a part whose r-weighted
+  // components S = r (sr, sz, tau) are quadratic in each triangle (six stress nodes per triangle, discontinuous
+  // between triangles). The second equilibrium equation d(S_tau)/dr + d(S_z)/dz = 0 (a linear function) is
+  // imposed at the three vertices, so it holds exactly; the first defines the hoop stress
+  // s_theta = d(S_r)/dr + d(S_tau)/dz, linear in the triangle. Every yield row multiplied by r is then a
+  // quadratic in the triangle; it is imposed on the six Bernstein coefficients of that quadratic, which is
+  // sufficient for it to hold everywhere. Tractions are continuous across edges (quadratic, so at three
+  // points). Beside the mesh the field is uniform in r (sr = s_theta, tau = 0, geostatic sz); below it
+  // sr = s_theta = S0 plus geostatic increments, as in plane strain.
+  const QPTS = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0], [0, 0.5, 0.5], [0.5, 0, 0.5]];
+  const QEDG = [[0, 1], [1, 2], [2, 0]];
+  // Bernstein coefficients of a quadratic from its values at the six points, as linear forms [idx, val]
+  function bernsteinOf(vals) {
+    const out = vals.slice(0, 3);
+    QEDG.forEach(([i, j], k) => {
+      const m = vals[3 + k], A1 = vals[i], A2 = vals[j];
+      out.push([m[0].concat(A1[0], A2[0]), m[1].map((v) => 2 * v).concat(A1[1].map((v) => -0.5 * v), A2[1].map((v) => -0.5 * v)), 2 * m[2] - 0.5 * (A1[2] + A2[2])]);
+    });
+    return out;
+  }
+  function axiLowerBound(highs, model, mesh, mats, opts) {
+    const nE = mesh.nE, lp = new LP(), g = model.geo, b = g.b;
+    for (let k = 0; k < nE * 18; k++) lp.addVar(-Infinity, Infinity, 0);
+    const sv = (e, n, k) => (e * 6 + n) * 3 + k;   // n: 0..2 vertices, 3..5 mid-sides (0,1), (1,2), (2,0)
+    const tolR = 1e-9 * Math.max(1, model.B);
+    const ptXY = (e, n) => { const X = mesh.XY[e], L = QPTS[n]; return [L[0] * X[0] + L[1] * X[2] + L[2] * X[4], L[0] * X[1] + L[1] * X[3] + L[2] * X[5]]; };
+    const dN = (e, L) => {
+      const gg = mesh.geo[e], dx = [], dy = [];
+      for (let i = 0; i < 3; i++) { dx.push((4 * L[i] - 1) * gg.b[i]); dy.push((4 * L[i] - 1) * gg.c[i]); }
+      QEDG.forEach(([i, j]) => { dx.push(4 * (L[j] * gg.b[i] + L[i] * gg.b[j])); dy.push(4 * (L[j] * gg.c[i] + L[i] * gg.c[j])); });
+      return { dx: dx, dy: dy };
+    };
+    // hoop stress at a point as a linear form
+    const hoop = (e, L) => { const d = dN(e, L), idx = [], val = []; for (let n = 0; n < 6; n++) { idx.push(sv(e, n, 0), sv(e, n, 2)); val.push(d.dx[n], d.dy[n]); } return [idx, val]; };
+    for (let e = 0; e < nE; e++) {
+      for (let j = 0; j < 3; j++) {
+        const d = dN(e, QPTS[j]), idx = [], val = [];
+        for (let n = 0; n < 6; n++) { idx.push(sv(e, n, 2), sv(e, n, 1)); val.push(d.dx[n], d.dy[n]); }
+        lp.addRow(idx, val, 0, 0);
+      }
+      for (let n = 0; n < 6; n++) if (Math.abs(ptXY(e, n)[0]) < tolR) for (let k = 0; k < 3; k++) { lp.lo[sv(e, n, k)] = 0; lp.up[sv(e, n, k)] = 0; }
+    }
+    const midOf = (sd) => 3 + ((sd.j === (sd.i + 1) % 3) ? sd.i : sd.j);
+    mesh.ifaces.forEach((f) => {
+      const [nx, ny] = f.n;
+      const cn = [nx * nx, ny * ny, 2 * nx * ny], ct = [-nx * ny, nx * ny, nx * nx - ny * ny];
+      [["i", "i"], ["m", "m"], ["j", "j"]].forEach(([which]) => {
+        [cn, ct].forEach((cf) => {
+          const idx = [], val = [];
+          [[f.s1, 1], [f.s2, -1]].forEach(([sd, sg]) => {
+            const n = which === "m" ? midOf(sd) : sd[which];
+            for (let k = 0; k < 3; k++) { idx.push(sv(sd.e, n, k)); val.push(sg * cf[k]); }
+          });
+          lp.addRow(idx, val, 0, 0);
+        });
+      });
+    });
+    const q0 = model.q0, u = porePressure(model, model.D), itf = interfaceOf(model);
+    const Av = lp.addVar(-Infinity, Infinity, 1);
+    const vI = [Av], vC = [-1];
+    // a quadratic along a boundary edge with values at (P, M, Q) given as linear forms: impose <= 0 on its
+    // Bernstein coefficients (or = 0 on its values)
+    const edgeLE = (fP, fM, fQ) => {
+      const coef = [fP, [fM[0].concat(fP[0], fQ[0]), fM[1].map((v) => 2 * v).concat(fP[1].map((v) => -0.5 * v), fQ[1].map((v) => -0.5 * v)), 2 * fM[2] - 0.5 * (fP[2] + fQ[2])], fQ];
+      coef.forEach(([idx, val, c0]) => lp.addRow(idx, val, -Infinity, -c0));
+    };
+    const deeper = model.layers.filter((l) => l.top > model.D + model.H + 1e-9);
+    const H = model.H, inc = (L) => -(sigmaV(model, L.top) - sigmaV(model, model.D + H));
+    let SR = null;
+    const tauRows = (cones) => { const out = []; cones.forEach((cn) => out.push([cn.k1 + cn.st, -cn.k1 + cn.st, cn.ct - cn.c1], [-cn.k1 + cn.st, cn.k1 + cn.st, cn.ct + cn.c1])); return out; };
+    mesh.bnd.forEach((bd) => {
+      const pts = [[bd.e, bd.i], [bd.e, midOf(bd)], [bd.e, bd.j]];
+      const xy = pts.map(([e, n]) => ptXY(e, n));
+      if (bd.type === "surface") pts.forEach(([e, n]) => { lp.addRow([sv(e, n, 1)], [1], 0, 0); lp.addRow([sv(e, n, 2)], [1], 0, 0); });
+      else if (bd.type === "footing") {
+        // no tension: S_z - q0 r <= 0
+        edgeLE(...pts.map(([e, n], k) => [[sv(e, n, 1)], [1], -q0 * xy[k][0]]));
+        if (!model.rough) pts.forEach(([e, n]) => lp.addRow([sv(e, n, 2)], [1], 0, 0));
+        else if (itf.r < 1) [1, -1].forEach((sg) => edgeLE(...pts.map(([e, n], k) => [[sv(e, n, 2), sv(e, n, 1)], [sg, itf.tphi], -(itf.c + q0 * itf.tphi) * xy[k][0]])));
+        // V' = -2 pi int S_z dr + pi q0 b^2 (Simpson is exact for the quadratic)
+        const L = Math.abs(bd.Q[0] - bd.P[0]);
+        [[pts[0], 1], [pts[1], 4], [pts[2], 1]].forEach(([[e, n], w]) => { vI.push(sv(e, n, 1)); vC.push(-2 * Math.PI * L * w / 6); });
+      } else if ((bd.type === "right" || bd.type === "base") && !opts.noExtension) {
+        pts.forEach(([e, n]) => lp.addRow([sv(e, n, 2)], [1], 0, 0));
+        const layer = mats[bd.e].layer;
+        if (bd.type === "right") {
+          const R = xy[0][0];
+          // R (px sr + py sz - rr) = px S_r + R (py g(y) - rr(y)) <= 0, quadratic along the edge
+          const rowsAt = xy.map((p2) => tauRows(conesAt(model, layer, p2[1])));
+          for (let k = 0; k < rowsAt[0].length; k++) edgeLE(...pts.map(([e, n], m) => { const [px, py, rr] = rowsAt[m][k]; return [[sv(e, n, 0)], [px], R * (py * sigGeo(model, xy[m][1]) - rr)]; }));
+          pts.forEach(([e, n], m) => {
+            if (Math.abs(xy[m][1] + H) < 1e-9 * Math.max(1, H) && SR === null) {
+              SR = lp.addVar(-Infinity, Infinity, 0);
+              lp.addRow([SR, sv(e, n, 0)], [1, -1 / R], 0, 0);
+              deeper.forEach((Ly) => { const Dl = inc(Ly); tauRows(conesAt(model, Ly, model.D - Ly.top)).forEach(([px, py, rr]) => lp.addRow([SR], [px], -Infinity, rr - px * Dl - py * (sigGeo(model, -H) + Dl))); });
+            }
+          });
+        }
+      }
+    });
+    if (!opts.noExtension) {
+      if (SR === null) SR = lp.addVar(-Infinity, Infinity, 0);
+      mesh.bnd.forEach((bd) => {
+        if (bd.type !== "base") return;
+        const pts = [[bd.e, bd.i], [bd.e, midOf(bd)], [bd.e, bd.j]], xy = pts.map(([e, n]) => ptXY(e, n)), layer = mats[bd.e].layer;
+        const gz = sigGeo(model, -H);
+        const sets = [[conesAt(model, layer, -H), 0]].concat(deeper.map((Ly) => [conesAt(model, Ly, model.D - Ly.top), inc(Ly)]));
+        sets.forEach(([cones, D]) => tauRows(cones).forEach(([px, py, rr]) => {
+          // r (px (S0 + D) + py (S_z / r + gz + D) - rr) <= 0
+          edgeLE(...pts.map(([e, n], m) => [[SR, sv(e, n, 1)], [px * xy[m][0], py], xy[m][0] * (px * D + py * (gz + D) - rr)]));
+        }));
+      });
+    }
+    const Vrhs = -Math.PI * b * b * (q0 + u);
+    lp.addRow(vI, vC, Vrhs, Vrhs);
+    // yield: Bernstein coefficients of r * (row) <= 0 in each triangle
+    const yRow = new Int32Array(nE + 1);
+    let cpY = 1;
+    for (let e = 0; e < nE; e++) {
+      yRow[e] = lp.rlo.length;
+      const layer = mats[e].layer, xy = [0, 1, 2, 3, 4, 5].map((n) => ptXY(e, n));
+      const rP = xy.map((p2) => Math.max(0, p2[0])), gP = xy.map((p2) => sigGeo(model, p2[1]));
+      const conesP = xy.map((p2) => axiConesAt(model, layer, p2[1]));
+      const hoopP = QPTS.map((L) => hoop(e, L));
+      for (let ci = 0; ci < conesP[0].length; ci++) {
+        let tmpl;
+        if (!opts.nu) {
+          const pg = polygon(opts.p); cpY = pg.cp;
+          tmpl = [];
+          for (let k = 0; k < pg.p; k++) {
+            const cn0 = conesP[0][ci];
+            tmpl.push({ cs: [pg.co[k] * cn0.k1 + pg.cp * cn0.st, -pg.co[k] * cn0.k1 + pg.cp * cn0.st, 2 * pg.si[k], pg.cp * (cn0.sth || 0)], aux: {}, beta: conesP.map((c6) => pg.cp * c6[ci].ct - pg.co[k] * c6[ci].c1), eq: false });
+          }
+        } else {
+          const cone = liftedCone(opts.nu); cpY = cone.cp;
+          tmpl = cone.rows.map((r) => {
+            const [cs] = coneRowSigma(r.a, conesP[0][ci], cone.cp), aux = {};
+            Object.keys(r.a).forEach((key) => { if (isAux(key)) aux[key] = r.a[key]; });
+            return { cs: cs, aux: aux, beta: conesP.map((c6) => r.up - coneRowSigma(r.a, c6[ci], cone.cp)[1]), eq: r.lo === r.up };
+          });
+        }
+        const auxV = {};   // auxiliary quadratics (r times the lifted-cone variables): six values each
+        tmpl.forEach((t) => {
+          const vals = [0, 1, 2, 3, 4, 5].map((n) => {
+            const idx = [sv(e, n, 0), sv(e, n, 1), sv(e, n, 2)], val = [t.cs[0], t.cs[1], t.cs[2]];
+            if (t.cs[3] && rP[n] > 0) { const [hi, hv] = hoopP[n]; hi.forEach((v, k) => { idx.push(v); val.push(t.cs[3] * rP[n] * hv[k]); }); }
+            Object.keys(t.aux).forEach((key) => {
+              if (!auxV[key]) auxV[key] = [0, 1, 2, 3, 4, 5].map(() => lp.addVar(-Infinity, Infinity, 0));
+              idx.push(auxV[key][n]); val.push(t.aux[key]);
+            });
+            return [idx, val, rP[n] * (t.cs[1] * gP[n] - t.beta[n])];
+          });
+          if (t.eq) vals.forEach(([idx, val, c0]) => lp.addRow(idx, val, -c0, -c0));
+          else bernsteinOf(vals).forEach(([idx, val, c0]) => lp.addRow(idx, val, -Infinity, -c0));
+        });
+      }
+    }
+    yRow[nE] = lp.rlo.length;
+    const r = runLP(highs, lp, "max", opts);
+    const area = Math.PI * b * b;
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true };
+    if (r.status === 8 || r.status === 9) out.infeasible = true;
+    if (r.x) {
+      const util = new Float64Array(nE * 3), ind = new Float64Array(nE);
+      for (let e = 0; e < nE; e++) {
+        for (let i = 0; i < 3; i++) {
+          const [rr, y] = ptXY(e, i);
+          if (rr < tolR) continue;
+          const sx = r.x[sv(e, i, 0)] / rr, sy = r.x[sv(e, i, 1)] / rr + sigGeo(model, y), t = r.x[sv(e, i, 2)] / rr;
+          const st = cphiAt(model, mats[e].layer, y), R = 2 * st.c * Math.cos(st.phi) - (sx + sy) * Math.sin(st.phi), q = Math.hypot(sx - sy, 2 * t);
+          util[e * 3 + i] = R > 1e-12 ? Math.min(1, q / (R * cpY)) : 1;
+        }
+        if (r.y) for (let k = yRow[e]; k < yRow[e + 1]; k++) ind[e] += Math.abs(r.y[k]);
+      }
+      out.util = util; if (r.y) out.ind = ind;
+    }
+    return out;
+  }
+
+  // Upper bound: quadratic velocities (u radial, v vertical) in each triangle, with quadratic velocity jumps
+  // between triangles (which avoids the locking that the hoop strain causes in undrained soil). The strain rates multiplied by r
+  // (r e_r, r e_z, r g_rz and r e_theta = u) are quadratic in each triangle. The plastic multipliers, also
+  // multiplied by r, are quadratics written in Bernstein form; non-negative Bernstein coefficients make them
+  // non-negative everywhere, and matching the flow rule coefficient by coefficient makes it hold everywhere.
+  // Along each edge the slip is split into non-negative quadratics (Bernstein form) with the associated
+  // dilation. The dissipation 2 pi int D r dA and the work terms are integrated exactly. Needs a conforming mesh.
+  function axiUpperBound(highs, model, mesh, mats, opts) {
+    if (!mesh.conforming) return null;
+    const nE = mesh.nE, lp = new LP(), g = model.geo, b = g.b, TP = 2 * Math.PI;
+    const tolR = 1e-9 * Math.max(1, model.B);
+    const pos = [], E = [];
+    for (let e = 0; e < nE; e++) {   // six nodes per triangle, not shared (jumps are allowed between triangles)
+      const X = mesh.XY[e], cn = [0, 1, 2].map((i) => { pos.push([X[2 * i], X[2 * i + 1]]); return pos.length - 1; });
+      const md = [0, 1, 2].map((i) => { const j = (i + 1) % 3; pos.push([(X[2 * i] + X[2 * j]) / 2, (X[2 * i + 1] + X[2 * j + 1]) / 2]); return pos.length - 1; });
+      E.push({ cn: cn, md: md });
+    }
+    const N = pos.length;
+    for (let k = 0; k < 2 * N; k++) lp.addVar(-Infinity, Infinity, 0);
+    const U = (n) => 2 * n, Vv = (n) => 2 * n + 1;
+    // Bernstein points of a quadratic on the triangle: vertices 0..2, then edges (0,1), (1,2), (2,0)
+    const EDG = [[0, 1], [1, 2], [2, 0]];
+    const strainOut = new Float64Array(nE), lamOf = [];
+    for (let e = 0; e < nE; e++) {
+      const gg = mesh.geo[e], el = E[e], bb = gg.b, cc = gg.c, X = mesh.XY[e];
+      const rV = [X[0], X[2], X[4]].map((v) => Math.max(0, v));
+      const lay = mats[e].layer, st = [0, 1, 2].map((j) => cphiAt(model, lay, X[2 * j + 1]));
+      // self-weight: int N_n r dA for the six Lagrange shape functions
+      const wV = (i, m) => (i === m ? gg.A / 30 : -gg.A / 60), wM = (i, j, m) => (m === i || m === j ? 2 * gg.A / 15 : gg.A / 15);
+      for (let i = 0; i < 3; i++) { let w = 0; for (let m = 0; m < 3; m++) w += wV(i, m) * rV[m]; lp.cost[Vv(el.cn[i])] += mats[e].gamma * TP * w; }
+      EDG.forEach(([i, j], k) => { let w = 0; for (let m = 0; m < 3; m++) w += wM(i, j, m) * rV[m]; lp.cost[Vv(el.md[k])] += mats[e].gamma * TP * w; });
+      // derivatives of the six shape functions at a point with area coordinates L
+      const dN = (L) => {
+        const dx = [], dy = [], nodes = [];
+        for (let i = 0; i < 3; i++) { nodes.push(el.cn[i]); dx.push((4 * L[i] - 1) * bb[i]); dy.push((4 * L[i] - 1) * cc[i]); }
+        EDG.forEach(([i, j], k) => { nodes.push(el.md[k]); dx.push(4 * (L[j] * bb[i] + L[i] * bb[j])); dy.push(4 * (L[j] * cc[i] + L[i] * cc[j])); });
+        return { nodes: nodes, dx: dx, dy: dy };
+      };
+      const Lpt = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0], [0, 0.5, 0.5], [0.5, 0, 0.5]];
+      const rAt = (L) => L[0] * rV[0] + L[1] * rV[1] + L[2] * rV[2];
+      // r-weighted strain components at the six points (vertices, edge midpoints): [idx, val] each
+      const comp = Lpt.map((L, k) => {
+        const d = dN(L), r = rAt(L), uIdx = d.nodes.map(U), vIdx = d.nodes.map(Vv);
+        const uHere = k < 3 ? [[U(el.cn[k])], [1]] : [[U(el.md[k - 3])], [1]];
+        return [[uIdx, d.dx.map((v) => v * r)], [vIdx, d.dy.map((v) => v * r)], [uIdx.concat(vIdx), d.dy.concat(d.dx).map((v) => v * r)], uHere];
+      });
+      // Bernstein coefficients from point values: vertex = value; edge = 2 f(mid) - (f_i + f_j)/2
+      const bern = (q) => {
+        const out = [];
+        for (let k = 0; k < 3; k++) out.push(comp[k][q]);
+        EDG.forEach(([i, j], k) => {
+          const m = comp[3 + k][q], A1 = comp[i][q], A2 = comp[j][q];
+          out.push([m[0].concat(A1[0], A2[0]), m[1].map((v) => 2 * v).concat(A1[1].map((v) => -0.5 * v), A2[1].map((v) => -0.5 * v))]);
+        });
+        return out;
+      };
+      const B4 = [0, 1, 2, 3].map(bern);  // B4[q][k] = [idx, val] of Bernstein coefficient k of component q
+      // effective cohesion for each Bernstein coefficient: (6/A) int B_k c dA
+      const cE = [0, 1, 2].map((i) => 0.6 * st[i].c + 0.2 * (st[(i + 1) % 3].c + st[(i + 2) % 3].c))
+        .concat(EDG.map(([i, j]) => 0.4 * (st[i].c + st[j].c) + 0.2 * st[3 - i - j].c));
+      let lamW = [];
+      for (let k = 0; k < 6; k++) {
+        const lk = Object.assign({}, lay, { c: cE[k], suGrad: 0, top: 0 });
+        const f = addFlowUB(lp, B4.map((q) => q[k]), axiConesAt(Object.assign({}, model, { D: 0 }), lk, 0), TP * gg.A / 6, opts);
+        lamW = lamW.concat(f.lam);
+      }
+      lamOf.push(lamW);
+    }
+    const simpson = (L, cP, rP, cM, rM, cQ, rQ) => [L / 6 * (cP * rP + 2 * cM * rM), L / 6 * (2 * cM * rM + cQ * rQ)];
+    const gp5 = [[0.1127016653792583, 0.2777777777777778], [0.5, 0.4444444444444444], [0.8872983346207417, 0.2777777777777778]];
+    // velocity jumps on the inter-element edges: Bernstein coefficients (P, middle, Q) of the jump components
+    mesh.ifaces.forEach((f) => {
+      const [tx, ty] = f.t, [nx, ny] = f.n;
+      const sides = [f.s1, f.s2].map((sd) => { const el = E[sd.e]; return { P: el.cn[sd.i], Q: el.cn[sd.j], M: el.md[(sd.j === (sd.i + 1) % 3) ? sd.i : sd.j] }; });
+      const lay = mats[f.s1.e].layer === mats[f.s2.e].layer ? mats[f.s1.e].layer : [mats[f.s1.e].layer, mats[f.s2.e].layer].sort((A, B) => cphiAt(model, A, f.P[1]).c - cphiAt(model, B, f.P[1]).c)[0];
+      const tphi = Math.tan(cphiAt(model, lay, f.P[1]).phi);
+      // jump at a point = side 2 minus side 1; Bernstein coefficient of the middle: 2 f(M) - (f(P) + f(Q))/2
+      const jumpCoef = (k, dir) => {
+        const idx = [], val = [];
+        [[sides[1], 1], [sides[0], -1]].forEach(([sd, sg]) => {
+          const pts = k === 0 ? [[sd.P, 1]] : k === 2 ? [[sd.Q, 1]] : [[sd.M, 2], [sd.P, -0.5], [sd.Q, -0.5]];
+          pts.forEach(([n, w]) => { idx.push(U(n), Vv(n)); val.push(sg * w * dir[0], sg * w * dir[1]); });
+        });
+        return [idx, val];
+      };
+      // dissipation weights: 2 pi int B_k(s) c(s) r(s) L ds
+      const wB = [0, 0, 0];
+      gp5.forEach(([sp, w]) => {
+        const x = f.P[0] + sp * (f.Q[0] - f.P[0]), y = f.P[1] + sp * (f.Q[1] - f.P[1]), cr = cphiAt(model, lay, y).c * Math.max(0, x) * w * f.L;
+        wB[0] += cr * (1 - sp) * (1 - sp); wB[1] += cr * 2 * sp * (1 - sp); wB[2] += cr * sp * sp;
+      });
+      for (let k = 0; k < 3; k++) {
+        const dp = lp.addVar(0, Infinity, TP * wB[k]), dm = lp.addVar(0, Infinity, TP * wB[k]);
+        const [it, vt] = jumpCoef(k, [tx, ty]), [inn, vn] = jumpCoef(k, [nx, ny]);
+        lp.addRow(it.concat([dp, dm]), vt.concat([-1, 1]), 0, 0);
+        lp.addRow(inn.concat([dp, dm]), vn.concat([-tphi, -tphi]), 0, 0);
+      }
+    });
+    const u = porePressure(model, model.D), area = Math.PI * b * b;
+    const v0 = lp.addVar(-Infinity, Infinity, -u * area);
+    lp.addRow([v0], [-1], 1, 1);                       // the footing load does unit power
+    const itf = interfaceOf(model), fixV = (v) => { lp.lo[v] = 0; lp.up[v] = 0; };
+    const gp = [[0.1127016653792583, 0.2777777777777778], [0.5, 0.4444444444444444], [0.8872983346207417, 0.2777777777777778]];
+    mesh.bnd.forEach((bd) => {
+      const el = E[bd.e], a1 = el.cn[bd.i], q1 = el.cn[bd.j];
+      const m1 = el.md[(bd.j === (bd.i + 1) % 3) ? bd.i : bd.j];
+      if (bd.type === "surface") {
+        const dxs = Math.abs(bd.Q[0] - bd.P[0]);
+        gp.forEach(([sp, w]) => {
+          const x = bd.P[0] + sp * (bd.Q[0] - bd.P[0]), qv = g.qs(x) * w * dxs * TP * Math.max(0, x);
+          lp.cost[Vv(a1)] += qv * (1 - sp) * (1 - 2 * sp); lp.cost[Vv(m1)] += qv * 4 * sp * (1 - sp); lp.cost[Vv(q1)] += qv * sp * (2 * sp - 1);
+        });
+      } else if (bd.type === "footing") {
+        lp.addRow([U(m1), U(a1), U(q1)], [2, -1, -1], 0, 0);
+        lp.addRow([Vv(m1), Vv(a1), Vv(q1)], [2, -1, -1], 0, 0);
+        const L = Math.abs(bd.Q[0] - bd.P[0]), w = simpson(L, itf.c, bd.P[0], itf.c, 0.5 * (bd.P[0] + bd.Q[0]), itf.c, bd.Q[0]);
+        [a1, q1].forEach((n, k) => {
+          const dp = lp.addVar(0, Infinity, TP * w[k]), dm = lp.addVar(0, Infinity, TP * w[k]), so = lp.addVar(0, Infinity, 0);
+          lp.addRow([U(n), dp, dm], [-1, -1, 1], 0, 0);
+          lp.addRow([v0, Vv(n), dp, dm, so], [1, -1, -itf.tphi, -itf.tphi, -1], 0, 0);
+        });
+      } else if (bd.type === "sym") [a1, m1, q1].forEach((n) => fixV(U(n)));
+      else [a1, m1, q1].forEach((n) => { fixV(U(n)); fixV(Vv(n)); });
+    });
+    for (let n = 0; n < N; n++) if (Math.abs(pos[n][0]) < tolR) fixV(U(n));
+    const r = runLP(highs, lp, "min", opts);
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true, quad: true };
+    if (r.x) {
+      for (let e = 0; e < nE; e++) { let gm = 0; lamOf[e].forEach(([v, w]) => (gm += w * Math.abs(r.x[v]))); strainOut[e] = gm / 6; }
+      out.strain = strainOut; out.footing = { u: 0, v: r.x[v0], w: 0 };
     }
     return out;
   }
@@ -1360,6 +1691,8 @@
     m.loadMode = ld.mode === "H" ? "H" : "V";
     m.slope = model0.slope && model0.slope.height > 0 ? Object.assign({}, model0.slope) : null;
     m.sym = !m.slope && m.loadMode === "V" && Math.abs(m.tanA) < 1e-12 && Math.abs(m.ecc) < 1e-12 && !(ld.Hfix) && !(ld.Mfix);
+    // axisymmetric analysis of a circular footing of diameter B (central vertical load on level ground only)
+    m.axisym = !!model0.axisym;
     // non-associated flow (Davis 1968): with dilation angle psi < phi, use c* = beta c, tan(phi*) = beta tan(phi),
     // beta = cos(psi) cos(phi) / (1 - sin(psi) sin(phi)). The bounds are rigorous for the reduced material; the
     // link to the real non-associated soil is approximate.
@@ -1388,6 +1721,8 @@
     return m;
   }
   function checkModel(m) {
+    if (m.axisym && !m.sym) throw new Error("The axisymmetric (circular) analysis needs a central vertical load on level ground.");
+    if (m.axisym && m.layers.some((l) => l.kt != null || (l.aniso && (l.aniso.rc !== 1 || l.aniso.re !== 1)))) throw new Error("Tension cut-offs and anisotropic strength are not available in the axisymmetric analysis.");
     if (Math.abs(m.ecc) >= 0.95 * m.B / 2) throw new Error("The eccentricity must be less than 0.475 B.");
     if (!m.rough && (Math.abs(m.loadRef[1]) > 1e-12 || Math.abs(m.loadFix[1]) > 1e-12)) throw new Error("A smooth base cannot carry horizontal load; tick Rough base or set the horizontal load to zero.");
     if (m.rInter != null && !(m.rInter > 0 && m.rInter <= 1)) throw new Error("The interface strength factor must be greater than 0 and at most 1.");
@@ -1465,7 +1800,8 @@
     n0 = mesh.nE;
     const wantLB = opts.lower !== false;
     res.layered = fixedDepths(model).some((z) => model.layers.some((l) => Math.abs(l.bottom - model.D - z) < 1e-9));
-    const wantFE = opts.feUpper === true || (opts.feUpper !== false && (res.layered || (!g0.sym && opts.feAutoCombined !== false)));
+    const axi = !!model.axisym;
+    const wantFE = axi || opts.feUpper === true || (opts.feUpper !== false && (res.layered || (!g0.sym && opts.feAutoCombined !== false) || (opts.feQuad && opts.feFrictional && model.layers.some((l) => l.phi > 0 && l.top < model.D + 3 * model.B))));
     res.cycles = [];
     for (let cyc = 0; cyc < cycles; cyc++) {
       const mats = assignMaterials(model, mesh);
@@ -1474,14 +1810,14 @@
       if (wantLB) {
         say(`Lower bound: finite element limit analysis (${mesh.nE} elements)${tag}`, (done + 3 * cyc / cycles) / total); await tick();
         t1 = Date.now();
-        lb = lowerBound(highs, model, mesh, mats, opts); lb.time = (Date.now() - t1) / 1000;
+        lb = (axi ? axiLowerBound : lowerBound)(highs, model, mesh, mats, opts); lb.time = (Date.now() - t1) / 1000;
         lb.mesh = mesh;
         if (!res.lb || (lb.valid && (!res.lb.valid || lb.V > res.lb.V)) || (!res.lb.valid && !lb.valid)) res.lb = lb;
       }
       if (wantFE) {
         say(`Upper bound: finite elements (${mesh.nE} elements)${tag}`, (done + 3 * (cyc + 0.5) / cycles) / total); await tick();
         t1 = Date.now();
-        ub = (opts.feQuad && mesh.conforming ? upperBoundQ : upperBound)(highs, model, mesh, mats, opts); ub.time = (Date.now() - t1) / 1000;
+        ub = (axi ? axiUpperBound : opts.feQuad && mesh.conforming ? upperBoundQ : upperBound)(highs, model, mesh, mats, opts); ub.time = (Date.now() - t1) / 1000;
         ub.mesh = mesh;
         if (!res.ub || (ub.valid && (!res.ub.valid || ub.V < res.ub.V)) || (!res.ub.valid && !ub.valid)) res.ub = ub;
         res.feReason = opts.feUpper === true ? "requested" : (!g0.sym ? "combined load or slope" : "layered profile");
@@ -1501,7 +1837,8 @@
     if (res.lb) { res.mesh = res.lb.mesh; } else res.mesh = mesh;
     res.model = model;
     const ubs = [];
-    if (res.dlo.valid) ubs.push(["Discontinuity layout optimisation", res.dlo.alpha, res.dlo]);
+    // (the plane-strain DLO mechanism is not an upper bound for a circular footing; it only sized the domain)
+    if (res.dlo.valid && !axi) ubs.push(["Discontinuity layout optimisation", res.dlo.alpha, res.dlo]);
     if (res.ub && res.ub.valid) ubs.push(["Finite element", res.ub.alpha, res.ub]);
     ubs.sort((p, q) => p[1] - q[1]);
     const fr = footingFrame(model);
@@ -1511,7 +1848,10 @@
     const aLb = res.lb && res.lb.valid ? res.lb.alpha : (res.lb && res.lb.infeasible ? 0 : NaN);
     const aUb = ubs.length ? ubs[0][1] : NaN;
     const at = (a, k) => fr.fix[k] + a * fr.ref[k];
-    res.best = { mode: model.loadMode, alphaLb: aLb, alphaUb: aUb, lb: at(aLb, 0) / B, ub: at(aUb, 0) / B, ubMethod: ubs.length ? ubs[0][0] : "",
+    // pressures: per unit length / B (plane strain), or force / (pi B^2 / 4) (axisymmetric)
+    const per = axi ? Math.PI * B * B / 4 : B;
+    res.axisym = axi;
+    res.best = { mode: model.loadMode, alphaLb: aLb, alphaUb: aUb, lb: at(aLb, 0) / per, ub: at(aUb, 0) / per, ubMethod: ubs.length ? ubs[0][0] : "", axisym: axi,
       Vlb: at(aLb, 0), Vub: at(aUb, 0), Hlb: at(aLb, 1), Hub: at(aUb, 1), Mlb: at(aLb, 2), Mub: at(aUb, 2),
       ref: fr.ref, fix: fr.fix, tanA: fr.tanA, e: fr.e, mech: ubs.length ? ubs[0][2].footing : null };
     if (res.lb && !res.lb.valid) res.warnings.push(res.lb.infeasible ? "No statically admissible stress field exists for this load direction, so the lower bound is zero." : "The lower-bound solve did not reach a feasible solution (" + statusText(res.lb.status) + "), so no lower bound is reported.");
