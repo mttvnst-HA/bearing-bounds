@@ -50,21 +50,31 @@ i. The summary also shows the mean of the bounds with ± half the gap, labelled 
 
 j. LP status: a bound is accepted only from a feasible primal point. If the interior-point solver stops without proving optimality and gives a lower bound of zero or less, the LP is re-solved with crossover.
 
-## Verification (Standard mesh, strip footing)
+## Verification (Standard mesh)
 
-| Case | Reference | LB ÷ ref. | UB ÷ ref. |
-|---|---|---|---|
-| Undrained, weightless, rough (Nc = 5.14) | 5.14 sᵤ | 0.992 | 1.009 |
-| c′ = 10, φ′ = 20°, weightless (Nc = 14.8) | 148.3 | 0.969 | 1.023 |
-| Surcharge only, φ′ = 30°, smooth (Nq = 18.4) | 184.0 | 0.884 | 1.026 |
-| Self-weight, φ′ = 30°, rough (Nγ = 14.75, Martin) | 265.5 | 0.910 | 1.189 |
-| Self-weight, φ′ = 40°, rough (Nγ = 85.6, Martin) | 1541 | 0.833 | 1.266 |
-| Crust: sᵤ 100 to 0.5 m over sᵤ 10, B = 2 m (true load ≤ 110.7) | ≤ 110.7 | 0.915 | 1.052 |
-| Inclined, undrained, H/(B·sᵤ) = 0.5 (Green 1954) | 448.4 | 0.994 | 1.013 |
-| Eccentric, undrained, e = 0.1B (Meyerhof effective width) | 411.4 | 1.006 | 1.062 |
-| Footing at crest of a 30° undrained slope, 4 m high, weightless | no closed form | Nc 4.06 | Nc 4.13 |
+Standard mesh: lifted 32-sided yield polygon, 2 adaptive cycles, 6-node finite element upper bound. The "before" columns are the 2026-10-24 values (24-sided polygon, one mesh).
 
-The eccentric lower bound sits slightly above the effective-width estimate, consistent with published limit-analysis studies that find the effective-width method slightly conservative.
+| Case | Reference | LB ÷ ref. | UB ÷ ref. | Before: LB / UB |
+|---|---|---|---|---|
+| Undrained, weightless, rough (Nc = 5.14) | 5.14 sᵤ | 0.994 | 1.009 | 0.992 / 1.009 |
+| c′ = 10, φ′ = 20°, weightless (Nc = 14.8) | 148.3 | 0.980 | 1.023 | 0.969 / 1.023 |
+| Surcharge only, φ′ = 30°, smooth (Nq = 18.4) | 184.0 | 0.886 | 1.026 | 0.884 / 1.026 |
+| Self-weight, φ′ = 30°, rough (Nγ = 14.75, Martin) | 265.5 | 0.927 | 1.108 | 0.910 / 1.189 |
+| Self-weight, φ′ = 40°, rough (Nγ = 85.6, Martin) | 1541 | 0.887 | 1.171 | 0.833 / 1.266 |
+| Crust: sᵤ 100 to 0.5 m over sᵤ 10, B = 2 m (true load ≤ 110.7) | ≤ 110.7 | 0.915 | 1.001 | 0.915 / 1.052 |
+| Inclined, undrained, H/(B·sᵤ) = 0.5 (Green 1954) | 448.4 | 0.993 | 1.013 | 0.994 / 1.013 |
+| Same, H = 100 held and V increased | 448.4 | 0.992 | 1.016 | new |
+| Same, V held and H increased (sliding) | H = 100 | 0.947 | 1.085 | new |
+| Eccentric, undrained, e = 0.1B (Meyerhof effective width) | 411.4 | 1.011 | 1.056 | 1.006 / 1.062 |
+| Footing at crest of a 30° undrained slope, 4 m high, weightless | no closed form | Nc 4.06 | Nc 4.13 | 4.06 / 4.13 |
+| Davis: c′ = 10, φ′ = 25°, ψ′ = 5°, weightless (c* Nc(φ*)) | 176.4 | 0.976 | 1.022 | new |
+| Tension cut-off kₜ = 0, c′ = 10, φ′ = 20° (Prandtl is an upper limit) | ≤ 148.3 | 0.975 | 1.023 | new |
+| Anisotropic clay, sᵤ,c = 1.6 sᵤ, sᵤ,e = 0.6 sᵤ (no closed form) | – | 546.8 | 555.2 | new |
+| Inclined as Green, interface factor R = 0.6 (no closed form) | – | 445.4 | 454.3 | new |
+| Strength factor of safety at half the Prandtl load (exact 2.0) | 2.0 | 0.990 | 1.013 | new |
+| Circular, rough, undrained, axisymmetric (Nc = 6.05, Eason and Shield) | 605 | 0.968 | 1.048 | new |
+
+The eccentric lower bound sits slightly above the effective-width estimate, consistent with published limit-analysis studies that find the effective-width method slightly conservative. A Standard run of one of these cases now takes 2 to 7 minutes on a desktop (before: 1 to 2).
 
 ## Review history
 
