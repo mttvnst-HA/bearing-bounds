@@ -156,8 +156,8 @@
   function splitCell(c) {
     const xm = 0.5 * (c.x0 + c.x1), ym = 0.5 * (c.y0 + c.y1), l = c.lev + 1;
     return [
-      { x0: c.x0, x1: xm, y0: c.y0, y1: ym, lev: l }, { x0: xm, x1: c.x1, y0: c.y0, y1: ym, lev: l },
-      { x0: c.x0, x1: xm, y0: ym, y1: c.y1, lev: l }, { x0: xm, x1: c.x1, y0: ym, y1: c.y1, lev: l }];
+      { x0: c.x0, x1: xm, y0: c.y0, y1: ym }, { x0: xm, x1: c.x1, y0: c.y0, y1: ym },
+      { x0: c.x0, x1: xm, y0: ym, y1: c.y1 }, { x0: xm, x1: c.x1, y0: ym, y1: c.y1 }].map((k) => Object.assign(k, { lev: l, ind: (c.ind || 0) / 4 }));
   }
   const key = (v) => Math.round(v * 1e7);
   function cellNeighbours(cells) {
@@ -235,21 +235,47 @@
     });
     return out;
   }
-  function fanPoints(model, fan, cx) {
-    const g = model.geo, pts = [[cx, 0]];
-    const nth = fan.nTheta, dth = Math.PI / nth;
-    let r = fan.r0;
+  // polar fan of points around a singular point (cx, cy): rings growing geometrically from r0 to R, each
+  // swept round the full circle and clipped to the domain, plus the points where each ring meets the slope
+  // face or the toe level (so the fan conforms to those boundaries)
+  function fanPoints(model, fan, f) {
+    const g = model.geo, pts = [[f.cx, f.cy]];
+    const nth = f.nTheta || fan.nTheta, dth = Math.PI / nth, R = f.R, tolI = 1e-9;
+    let r = f.r0 || fan.r0;
     const radii = [];
-    while (r < fan.R) { radii.push(r); r *= 1 + dth; }
-    radii.push(fan.R);
+    while (r < R) { radii.push(r); r *= 1 + dth; }
+    radii.push(R);
+    const ok = (x, y) => g.inside(x, y) && x > model.xL + tolI && x < model.xR - tolI && y > -model.H + tolI;
     radii.forEach((rr) => {
-      for (let j = 0; j <= nth; j++) {
-        const th = j * dth, x = cx + rr * Math.cos(th), y = -rr * Math.sin(th);
-        if (g.inside(x, y) && x > model.xL + 1e-9 && x < model.xR - 1e-9 && y > -model.H + 1e-9) pts.push([x, y]);
+      for (let j = 0; j < 2 * nth; j++) {
+        const th = j * dth, x = f.cx + rr * Math.cos(th), y = f.cy - rr * Math.sin(th);
+        if (ok(x, y)) pts.push([x, y]);
       }
-      if (g.sym && rr > Math.abs(cx) + 1e-9) { const y = -Math.sqrt(rr * rr - cx * cx); if (y > -model.H + 1e-9) pts.push([model.xL, y]); }
+      if (g.slope && f.kind !== "footing") {
+        const ca = Math.cos(Math.atan(g.tb)), sa = Math.sin(Math.atan(g.tb));
+        [[f.cx + rr * ca, f.cy - rr * sa], [f.cx - rr * ca, f.cy + rr * sa], [f.cx + rr, f.cy], [f.cx - rr, f.cy]].forEach(([x, y]) => {
+          const onF = y <= 1e-12 && y >= -g.Hs - 1e-12 && Math.abs(x - g.slopeX(y)) < 1e-9 * Math.max(1, model.B);
+          const onLevel = (Math.abs(y) < 1e-12 && x <= g.xc + 1e-12) || (Math.abs(y + g.Hs) < 1e-12 && x >= g.xt - 1e-12);
+          if ((onF || onLevel) && ok(x, y)) pts.push([x, y]);
+        });
+      }
+      if (g.sym && f.kind === "footing" && rr > Math.abs(f.cx) + 1e-9) { const y = -Math.sqrt(rr * rr - f.cx * f.cx); if (y > -model.H + 1e-9) pts.push([model.xL, y]); }
     });
     return pts;
+  }
+  // the fans of a model: footing edges, and the slope crest and toe when they are clear of the footing
+  function fansOf(model, opts) {
+    const g = model.geo, b = g.b, nTheta = opts.nTheta || 16, r0 = b * (opts.fanR0 || 0.04);
+    const gapC = g.slope ? g.xc - b : Infinity, crest = g.slope && gapC > 0.3 * b && opts.slopeFans === true;
+    const R = g.slope ? Math.max(0.16 * b, Math.min(b, (crest ? 0.65 : 0.8) * gapC)) : b;
+    const out = (g.sym ? [b] : [-b, b]).map((cx) => ({ kind: "footing", cx: cx, cy: 0, R: R, nTheta: nTheta, r0: r0 }));
+    if (crest) {
+      const Rc = Math.min(b, 0.3 * gapC, 0.45 * g.Hs);
+      out.push({ kind: "crest", cx: g.xc, cy: 0, R: Rc, nTheta: Math.max(8, Math.round(nTheta * 0.75)), r0: Rc * 0.05 });
+      const Rt = Math.min(b, 0.45 * g.Hs, 0.45 * (model.xR - g.xt));
+      if (g.xt < model.xR - 0.2 * b && Rt > 0.05 * b) out.push({ kind: "toe", cx: g.xt, cy: -g.Hs, R: Rt, nTheta: Math.max(8, Math.round(nTheta * 0.75)), r0: Rt * 0.05 });
+    }
+    return out;
   }
   function geoOf(XY) {
     return XY.map((X) => {
@@ -277,9 +303,9 @@
     const tol0 = 1e-9 * Math.max(W, H);
     const pts = [], seen = new Set();
     const add = (x, y) => { const k = key(x) + ":" + key(y); if (!seen.has(k)) { seen.add(k); pts.push([x, y]); } };
-    const fanCentres = g.sym ? [b] : [-b, b];
-    fanCentres.forEach((cx) => fanPoints(model, fan, cx).forEach(([x, y]) => add(x, y)));
-    const nearFan = (x, y, h) => fanCentres.some((cx) => Math.hypot(x - cx, y) < fan.R + 0.6 * h);
+    const fanList = fan.list || (g.sym ? [b] : [-b, b]).map((cx) => ({ kind: "footing", cx: cx, cy: 0, R: fan.R }));
+    fanList.forEach((f) => fanPoints(model, fan, f).forEach(([x, y]) => add(x, y)));
+    const nearFan = (x, y, h) => fanList.some((f) => Math.hypot(x - f.cx, y - f.cy) < f.R + 0.6 * h);
     const onFace = (x, y) => g.slope && y > -g.Hs - tol0 && y < tol0 && Math.abs(x - g.slopeX(y)) < 1e-7 * Math.max(W, H);
     cells.forEach((c) => {
       const h = Math.max(c.x1 - c.x0, c.y1 - c.y0);
@@ -390,7 +416,7 @@
     let area = 0; geo.forEach((gg) => (area += gg.A));
     const target = domainArea(model);
     if (bad || Math.abs(area - target) > 1e-7 * target) throw new Error("Mesh generation failed (area " + area.toFixed(4) + " vs " + target.toFixed(4) + ", " + bad + " stray edges)");
-    return { cells: cells, XY: XY, geo: geo, ifaces: ifaces, bnd: bnd, nE: XY.length, cellOf: cellOf, area: area, fan: fan };
+    return { cells: cells, XY: XY, geo: geo, ifaces: ifaces, bnd: bnd, nE: XY.length, cellOf: cellOf, area: area, fan: fan, conforming: true };
   }
   function orientIfaces(ifaces, geo) {
     ifaces.forEach((f) => {
@@ -481,13 +507,15 @@
     const attempt = (crossover, solver) => {
       const model = highs.createModel(data);
       try {
-        model.options.set({ log_to_console: !!globalThis.__LPLOG, output_flag: !!globalThis.__LPLOG, presolve: "on", solver: solver || "ipm", run_crossover: crossover, time_limit: opts.timeLimit || 600 });
+        const o = { log_to_console: !!globalThis.__LPLOG, output_flag: !!globalThis.__LPLOG, presolve: "on", solver: solver || opts.lpSolver || "ipm", run_crossover: crossover, time_limit: opts.timeLimit || 600 };
+        if (opts.ipmTol) o.ipm_optimality_tolerance = opts.ipmTol;
+        model.options.set(o);
         try { model.run(); } catch (e) { if (globalThis.__LPDEBUG) console.log("run error", solver, crossover, e.message); return { status: -1, pss: -1, pinf: NaN, obj: NaN, x: null }; }
         const status = model.getModelStatus();
         let pss = -1; try { pss = Number(model.info.get("primal_solution_status")); } catch (e) { /* not reported */ }
         let pinf = NaN; try { pinf = Number(model.info.get("max_primal_infeasibility")); } catch (e) { /* not reported */ }
         const sol = model.getSolution();
-        return { status: status, pss: pss, pinf: pinf, obj: model.getObjectiveValue(), x: sol.colValue };
+        return { status: status, pss: pss, pinf: pinf, obj: model.getObjectiveValue(), x: sol.colValue, y: sol.rowDual };
       } finally { model.dispose(); }
     };
     const good = (q) => q.pss === 2 && (q.status === 7 || q.status === 15) && !(q.pinf > 1e-6);
@@ -495,16 +523,124 @@
     if (!good(r) && r.status !== 8 && r.status !== 9 && r.status !== 10) { r = attempt("on"); crossover = true; }
     // interior point can fail outright on badly scaled problems; dual simplex is slower but robust
     if (r.status === -1) r = attempt("off", "simplex");
-    return { status: r.status, optimal: r.status === 7, valid: good(r), crossover: crossover, pinf: r.pinf, obj: r.obj, x: good(r) ? r.x : null, nVars: data.numCols, nRows: data.numRows };
+    return { status: r.status, optimal: r.status === 7, valid: good(r), crossover: crossover, pinf: r.pinf, obj: r.obj, x: good(r) ? r.x : null, y: good(r) ? r.y : null, nVars: data.numCols, nRows: data.numRows };
   }
   function statusText(s) { return { 7: "optimal", 8: "infeasible", 9: "unbounded or infeasible", 10: "unbounded", 13: "time limit", 14: "iteration limit", 15: "not proven optimal" }[s] || "status " + s; }
 
   // footing load geometry shared by the solvers
+  // Loads on the whole footing are F = Ffix + alpha Fref with F = (V, H, M): V down, H along +x, M = V e
+  // (positive for V to the right of the centre). Only alpha is increased to collapse. A half model carries
+  // the fraction w = 1/2 of every load.
   function footingFrame(model) {
     const g = model.geo, b = g.b;
     const width = g.sym ? b : 2 * b;                     // modelled footing width
     const uFoot = porePressure(model, model.D) * width;  // water force on the footing base
-    return { width: width, uFoot: uFoot, tanA: g.sym ? 0 : (model.tanA || 0), e: g.sym ? 0 : (model.ecc || 0) };
+    const ref = model.loadRef || [1, model.tanA || 0, model.ecc || 0];
+    const fix = model.loadFix || [0, 0, 0];
+    return { width: width, uFoot: uFoot, w: g.sym ? 0.5 : 1, ref: ref, fix: fix, tanA: g.sym ? 0 : (model.tanA || 0), e: g.sym ? 0 : (model.ecc || 0) };
+  }
+  // footing-soil interface: rough (soil strength times the factor rInter) or smooth
+  function interfaceOf(model) {
+    const base = cphiAt(model, soilAt(model, model.D + 1e-9), 0), r = model.rough ? (model.rInter == null ? 1 : model.rInter) : 0;
+    return { tphi: r * Math.tan(base.phi), c: r * base.c, r: r };
+  }
+
+  /* ================= linearised yield surface ================= */
+  // Plane-strain Mohr-Coulomb: ||(sigma_x - sigma_y, 2 tau)|| <= t = 2c cos(phi) - (sigma_x + sigma_y) sin(phi).
+  // Two linearisations are available. (1) A p-sided polygon (Sloan 1988): p rows per point.
+  // (2) The lifted polygon of Ben-Tal and Nemirovski (2001): nu stages of auxiliary variables give a
+  //     2^(nu+1)-sided polygon P with disk(t) inside P inside disk(t / cos(pi / 2^(nu+1))), using only
+  //     about 3 nu rows. The lower bound requires (x, cos(pi / 2^(nu+1)) t) in P, which implies the exact yield
+  //     condition; the upper bound uses the support function of P (through LP duality), which is at least
+  //     the exact dissipation. Both keep the bounds rigorous.
+  const POLYS = new Map();
+  function polygon(p) {
+    let o = POLYS.get(p);
+    if (!o) {
+      const th = []; for (let k = 0; k < p; k++) th.push(2 * Math.PI * (k + 0.5) / p);
+      o = { p: p, cp: Math.cos(Math.PI / p), th: th, co: th.map(Math.cos), si: th.map(Math.sin) };
+      POLYS.set(p, o);
+    }
+    return o;
+  }
+  // rows of the lifted polygon in local symbols "x1", "x2", "t" and auxiliaries 0..nAux-1; each row is
+  // { a: { symbol: coefficient }, lo, up } with the constant on the right
+  const BTNS = new Map();
+  function liftedCone(nu) {
+    let o = BTNS.get(nu);
+    if (o) return o;
+    const xi = (j) => j, eta = (j) => nu + 1 + j, R = [];
+    R.push({ a: { x1: 1, [xi(0)]: -1 }, lo: -Infinity, up: 0 }, { a: { x1: -1, [xi(0)]: -1 }, lo: -Infinity, up: 0 });
+    R.push({ a: { x2: 1, [eta(0)]: -1 }, lo: -Infinity, up: 0 }, { a: { x2: -1, [eta(0)]: -1 }, lo: -Infinity, up: 0 });
+    for (let j = 1; j <= nu; j++) {
+      const an = Math.PI / Math.pow(2, j + 1), c = Math.cos(an), s = Math.sin(an);
+      R.push({ a: { [xi(j)]: 1, [xi(j - 1)]: -c, [eta(j - 1)]: -s }, lo: 0, up: 0 });
+      R.push({ a: { [xi(j - 1)]: -s, [eta(j - 1)]: c, [eta(j)]: -1 }, lo: -Infinity, up: 0 });
+      R.push({ a: { [xi(j - 1)]: s, [eta(j - 1)]: -c, [eta(j)]: -1 }, lo: -Infinity, up: 0 });
+    }
+    const tRow = R.length;
+    R.push({ a: { [xi(nu)]: 1, t: -1 }, lo: -Infinity, up: 0 });
+    R.push({ a: { [eta(nu)]: 1, [xi(nu)]: -Math.tan(Math.PI / Math.pow(2, nu + 1)) }, lo: -Infinity, up: 0 });
+    o = { nu: nu, rows: R, nAux: 2 * nu + 2, tRow: tRow, cp: Math.cos(Math.PI / Math.pow(2, nu + 1)) };
+    BTNS.set(nu, o);
+    return o;
+  }
+  const isAux = (key) => key !== "x1" && key !== "x2" && key !== "t";
+  // a cone row on the stress components: x1 = sx - sy, x2 = 2 tau, t = f (2c cos(phi) - (sx + sy) sin(phi));
+  // returns [[c_sx, c_sy, c_tau], constant to move to the right-hand side]
+  function coneRowSigma(a, sinp, twoCcos, f) {
+    const x1 = a.x1 || 0, x2 = a.x2 || 0, t = a.t || 0;
+    return [[x1 - t * f * sinp, -x1 - t * f * sinp, 2 * x2], t * f * twoCcos];
+  }
+  // lower bound: inscribed yield condition at one stress point (variables ix, iy, it); returns the
+  // factor on the Mohr circle radius that the linearisation guarantees
+  function addYieldLB(lp, ix, iy, it, phi, c, opts) {
+    const sinp = Math.sin(phi), tc = 2 * c * Math.cos(phi);
+    if (!opts.nu) {
+      const pg = polygon(opts.p), sp = sinp * pg.cp, rhs = tc * pg.cp;
+      for (let k = 0; k < pg.p; k++) lp.addRow([ix, iy, it], [pg.co[k] + sp, -pg.co[k] + sp, 2 * pg.si[k]], -Infinity, rhs);
+      return pg.cp;
+    }
+    const cone = liftedCone(opts.nu), aux = [];
+    for (let k = 0; k < cone.nAux; k++) aux.push(lp.addVar(-Infinity, Infinity, 0));
+    cone.rows.forEach((r) => {
+      const [cs, k0] = coneRowSigma(r.a, sinp, tc, cone.cp), idx = [ix, iy, it], val = cs.slice();
+      Object.keys(r.a).forEach((key) => { if (isAux(key)) { idx.push(aux[+key]); val.push(r.a[key]); } });
+      lp.addRow(idx, val, r.lo === -Infinity ? -Infinity : r.lo - k0, r.up - k0);
+    });
+    return cone.cp;
+  }
+  // upper bound: plastic strain rates eps = [[idx, val] for eps_x, eps_y, gamma_xy] must be a non-negative
+  // combination of the outward normals of the circumscribed yield surface (the polygon, or the dual of the
+  // lifted polygon). The variables' costs, already multiplied by `area`, give the dissipation. Returns
+  // { vars, lam } where lam lists [variable, weight] for a plastic strain measure.
+  function addFlowUB(lp, eps, phi, c, area, opts) {
+    const sinp = Math.sin(phi), tc = 2 * c * Math.cos(phi), vars = [], rowsS = [[], [], []];
+    let lam = [];
+    if (!opts.nu) {
+      const pg = polygon(opts.p);
+      for (let k = 0; k < pg.p; k++) {
+        const v = lp.addVar(0, Infinity, tc * area);
+        rowsS[0].push([v, pg.co[k] + sinp]); rowsS[1].push([v, -pg.co[k] + sinp]); rowsS[2].push([v, 2 * pg.si[k]]);
+        vars.push(v); lam.push([v, 2]);
+      }
+    } else {
+      // support function of {sigma : A sigma + G z <= b} = min b.y over y >= 0 (free for equality rows)
+      // with A^T y = eps and G^T y = 0
+      const cone = liftedCone(opts.nu), auxRows = [];
+      for (let k = 0; k < cone.nAux; k++) auxRows.push([]);
+      cone.rows.forEach((r, ri) => {
+        const [cs, k0] = coneRowSigma(r.a, sinp, tc, 1);
+        const v = lp.addVar(r.lo === r.up ? -Infinity : 0, Infinity, -k0 * area);
+        for (let q = 0; q < 3; q++) if (cs[q] !== 0) rowsS[q].push([v, cs[q]]);
+        Object.keys(r.a).forEach((key) => { if (isAux(key)) auxRows[+key].push([v, r.a[key]]); });
+        vars.push(v);
+        if (ri === cone.tRow) lam = [[v, 2]];
+      });
+      auxRows.forEach((ar) => lp.addRow(ar.map((q) => q[0]), ar.map((q) => q[1]), 0, 0));
+    }
+    for (let q = 0; q < 3; q++) lp.addRow(eps[q][0].concat(rowsS[q].map((z) => z[0])), eps[q][1].concat(rowsS[q].map((z) => -z[1])), 0, 0);
+    return { vars: vars, lam: lam };
   }
 
   /* ================= lower bound ================= */
@@ -531,9 +667,10 @@
         });
       });
     });
-    // footing: effective vertical force V' = -int(sigma_y), H = int(tau), M = -int(sigma_y x); total V = V' + uFoot
-    const Vv = lp.addVar(-Infinity, Infinity, 1);
-    const vI = [Vv], vC = [1], hI = [], hC = [], mI = [], mC = [];
+    // footing: effective vertical force V' = -int(sigma_y), H = int(tau), M = -int(sigma_y x); total V = V' + uFoot.
+    // The objective is the load multiplier alpha: V' + uFoot = w (Vfix + alpha Vref), and likewise for H and M.
+    const Av = lp.addVar(-Infinity, Infinity, 1), itf = interfaceOf(model);
+    const vI = [Av], vC = [-fr.w * fr.ref[0]], hI = [], hC = [], mI = [], mC = [];
     mesh.bnd.forEach((bd) => {
       const L = Math.hypot(bd.Q[0] - bd.P[0], bd.Q[1] - bd.P[1]);
       const ends = [[bd.i, bd.P], [bd.j, bd.Q]];
@@ -549,7 +686,11 @@
         ends.forEach(([i], k) => {
           lp.addRow([sv(bd.e, i, 1)], [1], -Infinity, 0);            // no tension under the footing
           if (!model.rough) lp.addRow([sv(bd.e, i, 2)], [1], 0, 0);
-          vI.push(sv(bd.e, i, 1)); vC.push(L / 2);
+          else if (itf.r < 1) {                                       // partial roughness: |tau| <= a - sigma_y tan(delta)
+            lp.addRow([sv(bd.e, i, 2), sv(bd.e, i, 1)], [1, itf.tphi], -Infinity, itf.c);
+            lp.addRow([sv(bd.e, i, 2), sv(bd.e, i, 1)], [-1, itf.tphi], -Infinity, itf.c);
+          }
+          vI.push(sv(bd.e, i, 1)); vC.push(-L / 2);
           hI.push(sv(bd.e, i, 2)); hC.push(L / 2);
           const w = k === 0 ? (2 * x1 + x2) : (x1 + 2 * x2);
           mI.push(sv(bd.e, i, 1)); mC.push(Math.abs(x2 - x1) / 6 * w);
@@ -558,11 +699,12 @@
         [bd.i, bd.j].forEach((i) => lp.addRow([sv(bd.e, i, 2)], [1], 0, 0));
       }
     });
-    lp.addRow(vI, vC, 0, 0);
+    const vRhs = fr.w * fr.fix[0] - fr.uFoot;
+    lp.addRow(vI, vC, vRhs, vRhs);
     if (!g.sym) {
-      // H = tan(a) (V' + uFoot);  M = e (V' + uFoot), with M = -int(sigma_y x) (the uniform water force has no moment)
-      lp.addRow(hI.concat([Vv]), hC.concat([-fr.tanA]), fr.tanA * fr.uFoot, fr.tanA * fr.uFoot);
-      lp.addRow(mI.concat([Vv]), mC.map((c) => -c).concat([-fr.e]), fr.e * fr.uFoot, fr.e * fr.uFoot);
+      // H = Hfix + alpha Href;  M = Mfix + alpha Mref, with M = -int(sigma_y x) (the uniform water force has no moment)
+      lp.addRow(hI.concat([Av]), hC.concat([-fr.ref[1]]), fr.fix[1], fr.fix[1]);
+      lp.addRow(mI.concat([Av]), mC.map((c) => -c).concat([-fr.ref[2]]), fr.fix[2], fr.fix[2]);
     }
     const cp = Math.cos(Math.PI / p);
     const th = []; for (let k = 0; k < p; k++) th.push(2 * Math.PI * (k + 0.5) / p);
@@ -609,51 +751,59 @@
         });
       });
     }
+    const yRow = new Int32Array(nE * 3 + 1);
+    let cpY = 1;
     for (let e = 0; e < nE; e++) {
       const X = mesh.XY[e];
       for (let i = 0; i < 3; i++) {
+        yRow[e * 3 + i] = lp.rlo.length;
         const s = cphiAt(model, mats[e].layer, X[2 * i + 1]);
-        const sp = Math.sin(s.phi) * cp, rhs = 2 * s.c * Math.cos(s.phi) * cp;
-        for (let k = 0; k < p; k++) lp.addRow([sv(e, i, 0), sv(e, i, 1), sv(e, i, 2)], [Math.cos(th[k]) + sp, -Math.cos(th[k]) + sp, 2 * Math.sin(th[k])], -Infinity, rhs);
+        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), s.phi, s.c, opts);
       }
     }
+    yRow[nE * 3] = lp.rlo.length;
     const r = runLP(highs, lp, "max", opts);
-    const V = r.obj + fr.uFoot;
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, V: V, qu: V / fr.width };
+    const V = fr.w * (fr.fix[0] + r.obj * fr.ref[0]);
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: V, qu: V / fr.width };
     if (r.status === 8 || r.status === 9) out.infeasible = true;
     if (r.x) {
-      const util = new Float64Array(nE * 3), sig = new Float64Array(nE * 9);
+      const util = new Float64Array(nE * 3), sig = new Float64Array(nE * 9), ind = new Float64Array(nE);
       for (let e = 0; e < nE; e++) for (let i = 0; i < 3; i++) {
         const sx = r.x[sv(e, i, 0)], sy = r.x[sv(e, i, 1)], t = r.x[sv(e, i, 2)];
         sig[sv(e, i, 0)] = sx; sig[sv(e, i, 1)] = sy; sig[sv(e, i, 2)] = t;
         const s = cphiAt(model, mats[e].layer, mesh.XY[e][2 * i + 1]);
-        const R = 2 * s.c * Math.cos(s.phi) - (sx + sy) * Math.sin(s.phi);
-        util[e * 3 + i] = R > 1e-12 ? Math.min(1, Math.hypot(sx - sy, 2 * t) / (R * cp)) : 1;
+        const R = 2 * s.c * Math.cos(s.phi) - (sx + sy) * Math.sin(s.phi), q = Math.hypot(sx - sy, 2 * t);
+        util[e * 3 + i] = R > 1e-12 ? Math.min(1, q / (R * cpY)) : 1;
+        // shear dissipation indicator: plastic multipliers (row duals) times the deviatoric stress
+        if (r.y) { let lam = 0; for (let k = yRow[e * 3 + i]; k < yRow[e * 3 + i + 1]; k++) lam += Math.abs(r.y[k]); ind[e] += lam * q; }
       }
-      out.util = util; out.sig = sig;
+      out.util = util; out.sig = sig; if (r.y) out.ind = ind;
     }
     return out;
   }
 
+  // Rigid footing velocity (u0, v0, w0). The power of the multiplied (reference) load is normalised to 1, and
+  // w is the modelled fraction, so the objective is w alpha = D - W_gravity - W_surcharge - uFoot v0 - w P_fix, where
+  // P_fix = Vfix (-v0) + Hfix u0 - Mfix w0 is the power of the fixed loads. u0 is created by the caller.
+  function footingPower(lp, fr, u0, sym) {
+    const v0 = lp.addVar(-Infinity, Infinity, -fr.uFoot + fr.w * fr.fix[0]);
+    const w0 = lp.addVar(sym ? 0 : -Infinity, sym ? 0 : Infinity, fr.w * fr.fix[2]);
+    lp.addRow([v0, w0, u0], [-fr.ref[0], -fr.ref[2], fr.ref[1]], 1, 1);
+    return [v0, w0];
+  }
+
   /* ================= finite element upper bound ================= */
   function upperBound(highs, model, mesh, mats, opts) {
-    const p = opts.p, nE = mesh.nE, lp = new LP(), g = model.geo, fr = footingFrame(model);
+    const nE = mesh.nE, lp = new LP(), g = model.geo, fr = footingFrame(model);
     for (let k = 0; k < nE * 6; k++) lp.addVar(-Infinity, Infinity, 0);
     const uv = (e, i, k) => (e * 3 + i) * 2 + k;
-    const th = []; for (let k = 0; k < p; k++) th.push(2 * Math.PI * (k + 0.5) / p);
-    const lamStart = new Int32Array(nE);
+    const flows = [];
     for (let e = 0; e < nE; e++) {
       const gg = mesh.geo[e];
       for (let i = 0; i < 3; i++) lp.cost[uv(e, i, 1)] += mats[e].gamma * gg.A / 3;
       const s = cphiAt(model, mats[e].layer, gg.cy);
-      const sp = Math.sin(s.phi), E = 2 * s.c * Math.cos(s.phi);
-      const lam = [];
-      for (let k = 0; k < p; k++) lam.push(lp.addVar(0, Infinity, E * gg.A));
-      lamStart[e] = lam[0];
       const U = [uv(e, 0, 0), uv(e, 1, 0), uv(e, 2, 0)], V = [uv(e, 0, 1), uv(e, 1, 1), uv(e, 2, 1)];
-      lp.addRow(U.concat(lam), gg.b.concat(th.map((t) => -(Math.cos(t) + sp))), 0, 0);
-      lp.addRow(V.concat(lam), gg.c.concat(th.map((t) => -(-Math.cos(t) + sp))), 0, 0);
-      lp.addRow(U.concat(V, lam), gg.c.concat(gg.b, th.map((t) => -2 * Math.sin(t))), 0, 0);
+      flows.push(addFlowUB(lp, [[U, gg.b.slice()], [V, gg.c.slice()], [U.concat(V), gg.c.concat(gg.b)]], s.phi, s.c, gg.A, opts));
     }
     const discVars = [];
     mesh.ifaces.forEach((f, fi) => {
@@ -686,11 +836,8 @@
       discVars.push([fi, dv]);
     });
     // rigid footing (u0, v0, w): velocity at base point x is (u0, v0 + w x)
-    const u0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, 0);
-    const v0 = lp.addVar(-Infinity, Infinity, -fr.uFoot); // the water force on the base does work on the footing
-    const w0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, 0);
-    lp.addRow([v0, w0, u0], [-1, -fr.e, fr.tanA], 1, 1); // power of the applied loads normalised to V
-    const baseSoil = cphiAt(model, soilAt(model, model.D + 1e-9), 0);
+    const u0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, -fr.w * fr.fix[1]);
+    const [v0, w0] = footingPower(lp, fr, u0, g.sym);
     const fixV = (v, val) => { lp.lo[v] = val; lp.up[v] = val; };
     mesh.bnd.forEach((bd) => {
       const L = Math.hypot(bd.Q[0] - bd.P[0], bd.Q[1] - bd.P[1]);
@@ -701,7 +848,7 @@
         lp.cost[uv(bd.e, bd.j, 1)] += dx / 6 * (q1 + 2 * q2);
       } else if (bd.type === "footing") {
         // no-tension interface: free opening s >= 0; slip costs c|slip| with dilation tan(phi) when rough
-        const tphi = model.rough ? Math.tan(baseSoil.phi) : 0, cc = model.rough ? baseSoil.c : 0;
+        const itf = interfaceOf(model), tphi = itf.tphi, cc = itf.c;
         ends.forEach(([i, X]) => {
           const dp = lp.addVar(0, Infinity, cc * L / 2), dm = lp.addVar(0, Infinity, cc * L / 2), so = lp.addVar(0, Infinity, 0);
           lp.addRow([u0, uv(bd.e, i, 0), dp, dm], [1, -1, -1, 1], 0, 0);
@@ -714,14 +861,16 @@
       }
     });
     const r = runLP(highs, lp, "min", opts);
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, V: r.obj, qu: r.obj / fr.width };
+    const V = fr.w * fr.fix[0] + r.obj * fr.ref[0];
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width };
     if (r.x) {
       const vel = new Float64Array(nE * 6);
       for (let k = 0; k < nE * 6; k++) vel[k] = r.x[k];
       const diss = new Float64Array(nE), strain = new Float64Array(nE);
       for (let e = 0; e < nE; e++) {
         let s = 0, gg = 0;
-        for (let k = 0; k < p; k++) { const l = r.x[lamStart[e] + k]; s += l * lp.cost[lamStart[e] + k]; gg += 2 * l; }
+        flows[e].vars.forEach((v) => (s += r.x[v] * lp.cost[v]));
+        flows[e].lam.forEach(([v, w]) => (gg += w * Math.abs(r.x[v])));
         diss[e] = s; strain[e] = gg * mesh.geo[e].A;
       }
       discVars.forEach(([fi, dv]) => {
@@ -731,6 +880,98 @@
       });
       for (let e = 0; e < nE; e++) { diss[e] /= mesh.geo[e].A; strain[e] /= mesh.geo[e].A; }
       out.vel = vel; out.diss = diss; out.strain = strain;
+      out.footing = { u: r.x[u0], v: r.x[v0], w: r.x[w0] };
+    }
+    return out;
+  }
+
+  /* ================= quadratic (6-node) finite element upper bound ================= */
+  // Continuous quadratic velocity triangles (Yu, Sloan and Kleeman 1994; Optum's "Upper" element). Strain
+  // rates are linear, so the flow rule imposed at the three vertices with plastic multipliers interpolated
+  // linearly holds everywhere in the element, and the dissipation and self-weight work are integrated
+  // exactly. There are no velocity jumps between elements; the footing interface is kept linear along each
+  // footing edge so that its conditions at the edge ends hold along the whole edge. Needs a conforming mesh.
+  function upperBoundQ(highs, model, mesh, mats, opts) {
+    if (!mesh.conforming) return null;
+    const nE = mesh.nE, lp = new LP(), g = model.geo, fr = footingFrame(model);
+    const nodeId = new Map(), mid = new Map(), pos = [];
+    const corner = (x, y) => { const k = key(x) + ":" + key(y); let id = nodeId.get(k); if (id === undefined) { id = pos.length; nodeId.set(k, id); pos.push([x, y]); } return id; };
+    const E = [];
+    for (let e = 0; e < nE; e++) {
+      const X = mesh.XY[e], cn = [corner(X[0], X[1]), corner(X[2], X[3]), corner(X[4], X[5])];
+      const md = [0, 1, 2].map((i) => {
+        const a = cn[i], b = cn[(i + 1) % 3], kk = a < b ? a + "," + b : b + "," + a;
+        let id = mid.get(kk);
+        if (id === undefined) { id = pos.length; mid.set(kk, id); pos.push([(pos[a][0] + pos[b][0]) / 2, (pos[a][1] + pos[b][1]) / 2]); }
+        return id;
+      });
+      E.push({ cn: cn, md: md }); // md[i] lies between corners i and i+1
+    }
+    const N = pos.length;
+    for (let k = 0; k < 2 * N; k++) lp.addVar(-Infinity, Infinity, 0);
+    const U = (n) => 2 * n, Vv = (n) => 2 * n + 1;
+    const flows = [];
+    for (let e = 0; e < nE; e++) {
+      const gg = mesh.geo[e], el = E[e], b = gg.b, c = gg.c;
+      el.md.forEach((m) => (lp.cost[Vv(m)] += mats[e].gamma * gg.A / 3));    // self-weight acts on the mid-side nodes
+      const st = [0, 1, 2].map((j) => cphiAt(model, mats[e].layer, mesh.XY[e][2 * j + 1]));
+      const csum = st[0].c + st[1].c + st[2].c;
+      const fl = [];
+      for (let j = 0; j < 3; j++) {
+        // derivatives of the six shape functions at vertex j
+        const nodes = [], dx = [], dy = [];
+        for (let i = 0; i < 3; i++) { nodes.push(el.cn[i]); dx.push((i === j ? 3 : -1) * b[i]); dy.push((i === j ? 3 : -1) * c[i]); }
+        for (let i = 0; i < 3; i++) {
+          const k = (i + 1) % 3; // mid-side node between corners i and k: N = 4 L_i L_k
+          nodes.push(el.md[i]); dx.push(4 * ((k === j ? b[i] : 0) + (i === j ? b[k] : 0))); dy.push(4 * ((k === j ? c[i] : 0) + (i === j ? c[k] : 0)));
+        }
+        const eps = [[nodes.map(U), dx], [nodes.map(Vv), dy], [nodes.map(U).concat(nodes.map(Vv)), dy.concat(dx)]];
+        // exact integral of (linear multiplier) x (linear cohesion): weight (c_j + sum c) / 4 on area A / 3
+        fl.push(addFlowUB(lp, eps, st[j].phi, (st[j].c + csum) / 4, gg.A / 3, opts));
+      }
+      flows.push(fl);
+    }
+    const u0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, -fr.w * fr.fix[1]);
+    const [v0, w0] = footingPower(lp, fr, u0, g.sym);
+    const fixV = (v) => { lp.lo[v] = 0; lp.up[v] = 0; };
+    const gp = [[0.1127016653792583, 0.2777777777777778], [0.5, 0.4444444444444444], [0.8872983346207417, 0.2777777777777778]];
+    const itf = interfaceOf(model);
+    mesh.bnd.forEach((bd) => {
+      const el = E[bd.e], a = el.cn[bd.i], q = el.cn[bd.j];
+      const m = el.md[(bd.j === (bd.i + 1) % 3) ? bd.i : bd.j];
+      if (bd.type === "surface") {
+        const dxs = Math.abs(bd.Q[0] - bd.P[0]);
+        gp.forEach(([s, w]) => {
+          const x = bd.P[0] + s * (bd.Q[0] - bd.P[0]), qv = g.qs(x) * w * dxs;
+          lp.cost[Vv(a)] += qv * (1 - s) * (1 - 2 * s); lp.cost[Vv(m)] += qv * 4 * s * (1 - s); lp.cost[Vv(q)] += qv * s * (2 * s - 1);
+        });
+      } else if (bd.type === "footing") {
+        // soil velocity linear along the footing edge, then the no-tension interface at both ends
+        lp.addRow([U(m), U(a), U(q)], [2, -1, -1], 0, 0);
+        lp.addRow([Vv(m), Vv(a), Vv(q)], [2, -1, -1], 0, 0);
+        const L = Math.hypot(bd.Q[0] - bd.P[0], bd.Q[1] - bd.P[1]);
+        [[a, bd.P], [q, bd.Q]].forEach(([n, X]) => {
+          const dp = lp.addVar(0, Infinity, itf.c * L / 2), dm = lp.addVar(0, Infinity, itf.c * L / 2), so = lp.addVar(0, Infinity, 0);
+          lp.addRow([u0, U(n), dp, dm], [1, -1, -1, 1], 0, 0);
+          lp.addRow([v0, w0, Vv(n), dp, dm, so], [1, X[0], -1, -itf.tphi, -itf.tphi, -1], 0, 0);
+        });
+      } else if (bd.type === "sym") {
+        [a, m, q].forEach((n) => fixV(U(n)));
+      } else {
+        [a, m, q].forEach((n) => { fixV(U(n)); fixV(Vv(n)); });
+      }
+    });
+    const r = runLP(highs, lp, "min", opts);
+    const V = fr.w * fr.fix[0] + r.obj * fr.ref[0];
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width, quad: true };
+    if (r.x) {
+      const diss = new Float64Array(nE), strain = new Float64Array(nE);
+      for (let e = 0; e < nE; e++) {
+        let s = 0, gm = 0;
+        flows[e].forEach((f) => { f.vars.forEach((v) => (s += r.x[v] * lp.cost[v])); f.lam.forEach(([v, w]) => (gm += w * Math.abs(r.x[v]) / 3)); });
+        diss[e] = s / mesh.geo[e].A; strain[e] = gm;
+      }
+      out.diss = diss; out.strain = strain;
       out.footing = { u: r.x[u0], v: r.x[v0], w: r.x[w0] };
     }
     return out;
@@ -870,12 +1111,9 @@
       lp.addRow(rows[k][0], rows[k][1], 0, 0); lp.addRow(rows[k][2], rows[k][3], 0, 0);
     });
     // rigid footing and its no-tension interface with the soil under each footing segment
-    const u0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, 0);
-    const v0 = lp.addVar(-Infinity, Infinity, -fr.uFoot);
-    const w0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, 0);
-    lp.addRow([v0, w0, u0], [-1, -fr.e, fr.tanA], 1, 1);
-    const base = cphiAt(model, soilAt(model, model.D + 1e-9), 0);
-    const tphiI = model.rough ? Math.tan(base.phi) : 0, cI = model.rough ? base.c : 0;
+    const u0 = lp.addVar(g.sym ? 0 : -Infinity, g.sym ? 0 : Infinity, -fr.w * fr.fix[1]);
+    const [v0, w0] = footingPower(lp, fr, u0, g.sym);
+    const itf = interfaceOf(model), tphiI = itf.tphi, cI = itf.c;
     // Soil velocity under each footing segment: one column sum anchors the first segment; the others follow
     // from closing the loop at each footing node (keeps the constraint matrix sparse).
     const fx = uniqSorted(nodes.filter(underFooting).map((p) => p[0]), 1e-9);
@@ -913,7 +1151,8 @@
       });
     }
     const r = runLP(highs, lp, "min", opts);
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, V: r.obj, qu: r.obj / fr.width, nodes: nodes, nLines: lines.length };
+    const V = fr.w * fr.fix[0] + r.obj * fr.ref[0];
+    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width, nodes: nodes, nLines: lines.length };
     if (r.x) {
       const act = [];
       let jmax = 0;
@@ -993,32 +1232,42 @@
   }
 
   /* ================= adaptivity ================= */
-  function markCellsDLO(cells, dlo, frac, fans) {
+  const findCell = (cells, x, y) => {
+    for (let i = 0; i < cells.length; i++) { const c = cells[i]; if (x >= c.x0 && x <= c.x1 && y >= c.y0 && y <= c.y1) return i; }
+    return -1;
+  };
+  const inFan = (c, fans) => fans.some((f) => { const dx = Math.max(c.x0 - f.cx, 0, f.cx - c.x1), dy = Math.max(c.y0 - f.cy, 0, f.cy - c.y1); return Math.hypot(dx, dy) + Math.max(c.x1 - c.x0, c.y1 - c.y0) < f.R; });
+  // refinement indicator from the DLO mechanism: jump magnitude times length of the active lines in each cell
+  function dloIndicator(cells, dlo, fans) {
     const ind = new Float64Array(cells.length);
-    const find = (x, y) => {
-      for (let i = 0; i < cells.length; i++) { const c = cells[i]; if (x >= c.x0 && x <= c.x1 && y >= c.y0 && y <= c.y1) return i; }
-      return -1;
-    };
     let hmin = Infinity; cells.forEach((c) => (hmin = Math.min(hmin, c.x1 - c.x0, c.y1 - c.y0)));
     dlo.lines.forEach((l) => {
       if (l.m < 0.02 * dlo.jmax) return;
       const L = Math.hypot(l.C[0] - l.A[0], l.C[1] - l.A[1]), n = Math.max(2, Math.ceil(L / hmin));
       for (let k = 0; k < n; k++) {
-        const t = (k + 0.5) / n, ci = find(l.A[0] + t * (l.C[0] - l.A[0]), l.A[1] + t * (l.C[1] - l.A[1]));
+        const t = (k + 0.5) / n, ci = findCell(cells, l.A[0] + t * (l.C[0] - l.A[0]), l.A[1] + t * (l.C[1] - l.A[1]));
         if (ci >= 0) ind[ci] += l.m * L / n;
       }
     });
-    cells.forEach((c, i) => {
-      ind[i] *= Math.sqrt((c.x1 - c.x0) * (c.y1 - c.y0));
-      fans.forEach((f) => { const dx = Math.max(c.x0 - f.cx, 0, f.cx - c.x1), dy = Math.max(-c.y1, 0); if (Math.hypot(dx, dy) + Math.max(c.x1 - c.x0, c.y1 - c.y0) < f.R) ind[i] = 0; });
-    });
+    cells.forEach((c, i) => { ind[i] *= Math.sqrt((c.x1 - c.x0) * (c.y1 - c.y0)); if (inFan(c, fans)) ind[i] = 0; });
+    return ind;
+  }
+  // indicator from a finite element solution: per-element values summed into their cells
+  function meshIndicator(cells, mesh, perElem, fans) {
+    const ind = new Float64Array(cells.length);
+    for (let e = 0; e < mesh.nE; e++) { const ci = mesh.cellOf[e]; if (ci >= 0 && perElem[e] > 0) ind[ci] += perElem[e]; }
+    cells.forEach((c, i) => { if (inFan(c, fans)) ind[i] = 0; });
+    return ind;
+  }
+  const normalise = (a) => { let t = 0; a.forEach((v) => (t += v)); return t > 0 ? a.map((v) => v / t) : a; };
+  function markByIndicator(ind, frac) {
     const order = Array.from(ind.keys()).sort((p, q) => ind[q] - ind[p]);
     const tot = ind.reduce((p, q) => p + q, 0), marked = new Set();
     let cum = 0;
-    for (const i of order) { if (cum >= 0.97 * tot || marked.size >= frac * cells.length || ind[i] <= 0) break; marked.add(i); cum += ind[i]; }
+    for (const i of order) { if (cum >= 0.97 * tot || marked.size >= frac * ind.length || ind[i] <= 0) break; marked.add(i); cum += ind[i]; }
     return marked;
   }
-
+  function markCellsDLO(cells, dlo, frac, fans) { return markByIndicator(dloIndicator(cells, dlo, fans), frac); }
   /* ================= classical bearing capacity (comparison) ================= */
   // Vesic N factors, De Beer/Vesic shape factors, Meyerhof effective width and inclination factors.
   // Returns average ultimate pressures on the full width B (effective-width pressure x B'/B).
@@ -1054,6 +1303,7 @@
   // model0: {B, D, rough, gammaW, waterDepth, surcharge, layers, load: {tanA, e}, slope: {dist, height, angle} | null}
   function prepare(model0) {
     const m = Object.assign({}, model0);
+    m.input = model0;
     let top = 0;
     m.layers = model0.layers.map((l) => { const o = Object.assign({}, l, { top: top }); top = l.bottom; return o; });
     m.layers[m.layers.length - 1].bottom = 1e12;
@@ -1065,8 +1315,24 @@
     }
     const ld = model0.load || {};
     m.tanA = ld.tanA || 0; m.ecc = ld.e || 0;
+    // load vectors (V, H, M) on the whole footing, per unit length. Mode "V": V is increased to collapse with
+    // H = V tan(alpha) + Hfix and M = V e + Mfix. Mode "H": V = Vfix (at eccentricity e) is held and H is
+    // increased (sliding capacity).
+    if (ld.mode === "H") { m.loadRef = [0, 1, 0]; m.loadFix = [ld.Vfix || 0, 0, (ld.Vfix || 0) * m.ecc + (ld.Mfix || 0)]; }
+    else { m.loadRef = [1, m.tanA, m.ecc]; m.loadFix = [0, ld.Hfix || 0, ld.Mfix || 0]; }
+    m.loadMode = ld.mode === "H" ? "H" : "V";
     m.slope = model0.slope && model0.slope.height > 0 ? Object.assign({}, model0.slope) : null;
-    m.sym = !m.slope && Math.abs(m.tanA) < 1e-12 && Math.abs(m.ecc) < 1e-12;
+    m.sym = !m.slope && m.loadMode === "V" && Math.abs(m.tanA) < 1e-12 && Math.abs(m.ecc) < 1e-12 && !(ld.Hfix) && !(ld.Mfix);
+    // non-associated flow (Davis 1968): with dilation angle psi < phi, use c* = beta c, tan(phi*) = beta tan(phi),
+    // beta = cos(psi) cos(phi) / (1 - sin(psi) sin(phi)). The bounds are rigorous for the reduced material; the
+    // link to the real non-associated soil is approximate.
+    m.layers.forEach((l) => {
+      if (l.psi == null || !(l.phi > 0) || l.psi >= l.phi) return;
+      const f = l.phi * Math.PI / 180, ps = Math.max(0, l.psi) * Math.PI / 180;
+      const beta = Math.cos(ps) * Math.cos(f) / (1 - Math.sin(ps) * Math.sin(f));
+      l.davis = { beta: beta, c: l.c, phi: l.phi };
+      l.c = beta * l.c; l.suGrad = beta * (l.suGrad || 0); l.phi = Math.atan(beta * Math.tan(f)) * 180 / Math.PI;
+    });
     m.q0 = sigmaV(m, m.D) + (m.surcharge || 0);
     let phi = 0;
     m.layers.forEach((l) => { if (l.top - m.D < 2 * m.B) phi = Math.max(phi, l.phi); });
@@ -1086,7 +1352,8 @@
   }
   function checkModel(m) {
     if (Math.abs(m.ecc) >= 0.95 * m.B / 2) throw new Error("The eccentricity must be less than 0.475 B.");
-    if (!m.rough && Math.abs(m.tanA) > 1e-12) throw new Error("A smooth base cannot carry horizontal load; tick Rough base or set the horizontal load to zero.");
+    if (!m.rough && (Math.abs(m.loadRef[1]) > 1e-12 || Math.abs(m.loadFix[1]) > 1e-12)) throw new Error("A smooth base cannot carry horizontal load; tick Rough base or set the horizontal load to zero.");
+    if (m.rInter != null && !(m.rInter > 0 && m.rInter <= 1)) throw new Error("The interface strength factor must be greater than 0 and at most 1.");
     if (m.slope && m.waterDepth != null && m.waterDepth < m.slope.height - 1e-9) throw new Error("A water table above the slope toe is not supported; set it at or below the toe depth.");
   }
   const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -1098,6 +1365,7 @@
     const steps = opts.adaptSteps == null ? 3 : opts.adaptSteps;
     let model = prepare(model0);
     checkModel(model);
+    const prepared = model;
     const total = 3 + (opts.lower !== false ? 3 : 0) + 2;
     let done = 0;
     const res = { warnings: [] };
@@ -1105,7 +1373,7 @@
     let t1 = Date.now();
     res.dlo = dloAdaptive(highs, model, opts); res.dlo.time = (Date.now() - t1) / 1000; done += 3;
     if (!res.dlo.lines) {
-      if (res.dlo.status === 10 || res.dlo.status === 9) throw new Error("The ground fails under its own weight before any footing load is applied. Check the slope angle against the soil strength.");
+      if (res.dlo.status === 10 || res.dlo.status === 9) throw new Error(model.loadFix.some((v) => v) ? "The fixed loads alone (with the ground's own weight) exceed the capacity: no multiplied load can be added. Reduce the fixed loads." : "The ground fails under its own weight before any footing load is applied. Check the slope angle against the soil strength.");
       throw new Error("Upper bound solve failed (" + statusText(res.dlo.status) + ")");
     }
     // finite element domain sized from the mechanism, with room for the stress field to spread.
@@ -1115,63 +1383,210 @@
     if (g0.slope) xR = Math.max(xR, g0.xt + 0.75 * B);
     const xL = g0.sym ? 0 : Math.min(2.2 * ex.xL, -2.5 * B);
     let H = Math.max(2.8 * ex.depth, 1.5 * B);
-    if (g0.slope) H = Math.max(H, g0.Hs + 1.0 * B);
+    // below a slope the base must be deep enough for the topographic stress difference to spread by shear
+    // before the extension (which has uniform horizontal stress) takes over
+    const weighty = model.layers.some((l) => l.gamma > 0 || l.gammaSat > model.gammaW);
+    if (g0.slope) H = Math.max(H, g0.Hs + Math.max(1.0 * B, (opts.slopeDepth == null ? (weighty ? 4 : 0) : opts.slopeDepth) * g0.Hs));
     model = onDomain(model, xL, xR, H, { xL: Math.min(-0.5 * B, 1.1 * ex.xL), xR: Math.min(xR, Math.max(1.1 * ex.xR, g0.slope ? g0.xt : 0)), depth: Math.min(H, 1.1 * ex.depth) });
     if (g0.sym) model.ext.xL = 0;
     const b = B / 2;
-    const fan = { nTheta: opts.nTheta || 16, r0: b * (opts.fanR0 || 0.04), R: g0.slope ? Math.max(0.16 * b, Math.min(b, 0.8 * (g0.xc - b))) : b };
-    const fans = (g0.sym ? [b] : [-b, b]).map((cx) => ({ cx: cx, R: fan.R }));
+    let fans = fansOf(model, opts);
+    const fan = { nTheta: opts.nTheta || 16, r0: b * (opts.fanR0 || 0.04), R: fans[0].R, list: fans };
     let cells = initialCells(model, opts.nf || 4);
     const target = (opts.targetElems || 1800) * (g0.sym ? 1 : 1.3);
     const mk = (cs) => {
       try { return buildTriMesh(model, cs, fan); }
-      catch (e) { if (model.geo.slope) throw e; res.meshFallback = true; return buildQuadMesh(model, cs); }
+      catch (e) {
+        if (fan.list.length > fans.filter((f) => f.kind === "footing").length) {  // drop the slope fans and retry
+          fans = fans.filter((f) => f.kind === "footing"); fan.list = fans; res.slopeFansDropped = true;
+          return mk(cs);
+        }
+        if (model.geo.slope) throw e; res.meshFallback = true; return buildQuadMesh(model, cs);
+      }
     };
-    let mesh = mk(cells);
-    for (let s = 0; s < steps && mesh.nE < target * 0.9; s++) {
-      const growth = Math.pow(Math.max(1.05, target / mesh.nE), 1 / (steps - s));
-      cells = refineCells(cells, markCellsDLO(cells, res.dlo, Math.min(0.6, Math.max(0.05, (growth - 1) / 3)), fans));
-      mesh = mk(cells);
-    }
-    const mats = assignMaterials(model, mesh);
-    Object.assign(res, { model: model, mesh: mesh, mats: mats });
-    if (opts.lower !== false) {
-      say(`Lower bound: finite element limit analysis (${mesh.nE} elements)`, done / total); await tick();
-      t1 = Date.now();
-      res.lb = lowerBound(highs, model, mesh, mats, opts); res.lb.time = (Date.now() - t1) / 1000; done += 3;
-    }
-    // finite element upper bound for layered profiles, slopes and combined loads, or on request
+    // Adaptive cycles (after Optum: start coarse, refine on the shear dissipation, 3 or 4 cycles). The first
+    // mesh is refined from the DLO mechanism; later meshes from the plastic multipliers of the lower bound
+    // (row duals) and the plastic strain of the finite element upper bound. Every mesh gives valid bounds,
+    // so the best of each kind is kept.
+    const cycles = Math.max(1, opts.adaptCycles || 1);
+    let n0 = 0;
+    const targetAt = (k) => (k === 0 ? (cycles === 1 ? target : target * (opts.startFrac || 0.5))
+      : Math.max(1.15 * n0 * Math.pow(1.15, k - 1), n0 * Math.pow(target / n0, k / (cycles - 1))));
+    const refineTo = (tgt, indicatorOf, steps) => {
+      let m = mk(cells);
+      for (let s = 0; s < steps && m.nE < tgt * 0.9; s++) {
+        const growth = Math.pow(Math.max(1.05, tgt / m.nE), 1 / (steps - s));
+        const ind = indicatorOf(cells, m);
+        cells.forEach((c, i) => (c.ind = ind[i]));
+        cells = refineCells(cells, markByIndicator(ind, Math.min(0.6, Math.max(0.05, (growth - 1) / 3))));
+        m = mk(cells);
+      }
+      return m;
+    };
+    const dloInd = (cs) => dloIndicator(cs, res.dlo, fans);
+    let mesh = refineTo(targetAt(0), dloInd, steps);
+    n0 = mesh.nE;
+    const wantLB = opts.lower !== false;
     res.layered = fixedDepths(model).some((z) => model.layers.some((l) => Math.abs(l.bottom - model.D - z) < 1e-9));
     const wantFE = opts.feUpper === true || (opts.feUpper !== false && (res.layered || (!g0.sym && opts.feAutoCombined !== false)));
-    if (wantFE) {
-      say(`Upper bound: finite elements (${mesh.nE} elements)`, done / total); await tick();
-      t1 = Date.now();
-      res.ub = upperBound(highs, model, mesh, mats, opts); res.ub.time = (Date.now() - t1) / 1000;
-      res.feReason = opts.feUpper === true ? "requested" : (!g0.sym ? "combined load or slope" : "layered profile");
+    res.cycles = [];
+    for (let cyc = 0; cyc < cycles; cyc++) {
+      const mats = assignMaterials(model, mesh);
+      const tag = cycles > 1 ? ` – cycle ${cyc + 1} of ${cycles}` : "";
+      let lb = null, ub = null;
+      if (wantLB) {
+        say(`Lower bound: finite element limit analysis (${mesh.nE} elements)${tag}`, (done + 3 * cyc / cycles) / total); await tick();
+        t1 = Date.now();
+        lb = lowerBound(highs, model, mesh, mats, opts); lb.time = (Date.now() - t1) / 1000;
+        lb.mesh = mesh;
+        if (!res.lb || (lb.valid && (!res.lb.valid || lb.V > res.lb.V)) || (!res.lb.valid && !lb.valid)) res.lb = lb;
+      }
+      if (wantFE) {
+        say(`Upper bound: finite elements (${mesh.nE} elements)${tag}`, (done + 3 * (cyc + 0.5) / cycles) / total); await tick();
+        t1 = Date.now();
+        ub = (opts.feQuad && mesh.conforming ? upperBoundQ : upperBound)(highs, model, mesh, mats, opts); ub.time = (Date.now() - t1) / 1000;
+        ub.mesh = mesh;
+        if (!res.ub || (ub.valid && (!res.ub.valid || ub.V < res.ub.V)) || (!res.ub.valid && !ub.valid)) res.ub = ub;
+        res.feReason = opts.feUpper === true ? "requested" : (!g0.sym ? "combined load or slope" : "layered profile");
+      }
+      res.cycles.push({ nE: mesh.nE, lb: lb && lb.valid ? lb.V : NaN, ub: ub && ub.valid ? ub.V : NaN });
+      if (cyc === cycles - 1) break;
+      // indicators on the current cells, then refine toward the next target
+      const parts = [normalise(dloInd(cells))];
+      if (lb && lb.ind) parts.push(normalise(meshIndicator(cells, mesh, lb.ind, fans)));
+      if (ub && ub.strain) parts.push(normalise(meshIndicator(cells, mesh, Array.from(ub.strain, (v, e) => v * mesh.geo[e].A), fans)));
+      const comb = new Float64Array(cells.length);
+      parts.forEach((a) => a.forEach((v, i) => (comb[i] += v / parts.length)));
+      let first = true;
+      mesh = refineTo(targetAt(cyc + 1), (cs) => { if (first) { first = false; return comb; } return Float64Array.from(cs, (c) => c.ind || 0); }, 2);
     }
+    done += 3;
+    if (res.lb) { res.mesh = res.lb.mesh; } else res.mesh = mesh;
+    res.model = model;
     const ubs = [];
-    if (res.dlo.valid) ubs.push(["Discontinuity layout optimisation", res.dlo.V, res.dlo]);
-    if (res.ub && res.ub.valid) ubs.push(["Finite element", res.ub.V, res.ub]);
+    if (res.dlo.valid) ubs.push(["Discontinuity layout optimisation", res.dlo.alpha, res.dlo]);
+    if (res.ub && res.ub.valid) ubs.push(["Finite element", res.ub.alpha, res.ub]);
     ubs.sort((p, q) => p[1] - q[1]);
     const fr = footingFrame(model);
     res.uBase = porePressure(model, model.D);
     res.sym = g0.sym;
-    // collapse loads are totals per unit length for the whole footing
-    const scale = g0.sym ? 2 : 1;
-    const Vlb = res.lb && res.lb.valid ? res.lb.V * scale : (res.lb && res.lb.infeasible ? 0 : NaN);
-    const Vub = ubs.length ? ubs[0][1] * scale : NaN;
-    res.best = { lb: Vlb / B, ub: Vub / B, ubMethod: ubs.length ? ubs[0][0] : "", Vlb: Vlb, Vub: Vub, tanA: fr.tanA, e: fr.e, mech: ubs.length ? ubs[0][2].footing : null };
+    // collapse loads are totals per unit length for the whole footing: F = Ffix + alpha Fref
+    const aLb = res.lb && res.lb.valid ? res.lb.alpha : (res.lb && res.lb.infeasible ? 0 : NaN);
+    const aUb = ubs.length ? ubs[0][1] : NaN;
+    const at = (a, k) => fr.fix[k] + a * fr.ref[k];
+    res.best = { mode: model.loadMode, alphaLb: aLb, alphaUb: aUb, lb: at(aLb, 0) / B, ub: at(aUb, 0) / B, ubMethod: ubs.length ? ubs[0][0] : "",
+      Vlb: at(aLb, 0), Vub: at(aUb, 0), Hlb: at(aLb, 1), Hub: at(aUb, 1), Mlb: at(aLb, 2), Mub: at(aUb, 2),
+      ref: fr.ref, fix: fr.fix, tanA: fr.tanA, e: fr.e, mech: ubs.length ? ubs[0][2].footing : null };
     if (res.lb && !res.lb.valid) res.warnings.push(res.lb.infeasible ? "No statically admissible stress field exists for this load direction, so the lower bound is zero." : "The lower-bound solve did not reach a feasible solution (" + statusText(res.lb.status) + "), so no lower bound is reported.");
     if (!ubs.length) res.warnings.push("No upper-bound solve reached a feasible solution.");
     if (res.dlo.touches && (res.dlo.touches.left || res.dlo.touches.right || res.dlo.touches.base)) res.warnings.push("The mechanism still reaches the edge of the largest domain tried; the upper bound may be loose.");
-    if (Vub <= 0) res.warnings.push("The upper bound is zero or negative: the ground fails under its own weight.");
+    if (aUb <= 0) res.warnings.push("The upper bound is zero or negative: the ground fails under its own weight" + (fr.fix.some((v) => v) ? " and the fixed loads." : "."));
+    if (opts.strength && res.lb) {
+      res.strength = await strengthFS(highs, prepared, model, res, opts, say);
+      if (res.strength.note) res.warnings.push(res.strength.note);
+    }
     res.time = (Date.now() - t0) / 1000;
     say("Done", 1);
     return res;
   }
 
+  /* ================= factor of safety on strength ================= */
+  // Strength reduction (as in Optum's Strength Reduction analysis): c, su and tan(phi) are divided by F and
+  // the applied loads are held. With alpha(F) the collapse multiplier of the reduced soil and t the applied
+  // multiplier, the factor of safety is the F at which alpha(F) = t. Any F with alpha_LB(F) >= t proves
+  // FS >= F, and any F with alpha_UB(F) <= t proves FS <= F, so each bound is the safe end of its own bracket.
+  function reducedModel(model, F) {
+    const layers = model.layers.map((l) => Object.assign({}, l, { c: l.c / F, suGrad: (l.suGrad || 0) / F, phi: Math.atan(Math.tan(l.phi * Math.PI / 180) / F) * 180 / Math.PI }));
+    return Object.assign({}, model, { layers: layers });
+  }
+  async function strengthFS(highs, prepared, feModel, res, opts, say) {
+    const t = opts.strength.target, tol = opts.strength.tol || 0.01, maxEval = opts.strength.maxEval || 9;
+    const mesh = res.mesh, dloOpts = Object.assign({}, opts, { dloNodes: Math.round((opts.dloNodes || 420) * 0.8) });
+    const evals = [];
+    const lbAt = async (F) => {
+      say(`Factor of safety on strength: lower bound at F = ${F.toFixed(3)}`, 0.9); await tick();
+      const m = reducedModel(feModel, F), r = lowerBound(highs, m, mesh, assignMaterials(m, mesh), opts);
+      const a = r.valid ? r.alpha : -Infinity;
+      evals.push({ kind: "LB", F: F, alpha: a });
+      return a;
+    };
+    const ubAt = async (F) => {
+      say(`Factor of safety on strength: upper bound at F = ${F.toFixed(3)}`, 0.95); await tick();
+      const r = dloAdaptive(highs, reducedModel(prepared, F), dloOpts);
+      const a = r.lines && r.valid ? r.alpha : (r.status === 10 || r.status === 9 ? -Infinity : NaN);
+      evals.push({ kind: "UB", F: F, alpha: a });
+      return a;
+    };
+    // Secant steps on (log F, log alpha). Each step aims just past the estimated root on whichever side is
+    // still missing from the bracket (first the proving side), with geometric bisection as the fallback.
+    // proven(alpha) says whether an evaluation proves the bound at that F; proofs hold for F below the FS
+    // (lower bound, provenBelow) or above it (upper bound).
+    const bracket = async (fn, F0, a0, proven, provenBelow) => {
+      let pf = null, nf = null, n = 0;
+      const pts = [[F0, a0]];
+      if (proven(a0)) pf = F0; else nf = F0;
+      const near = (F) => pts.some((q) => Math.abs(Math.log(q[0] / F)) < 0.2 * tol);
+      while (n < maxEval && !(pf !== null && nf !== null && Math.abs(Math.log(nf / pf)) <= Math.log(1 + tol))) {
+        const good = pts.filter((q) => q[1] > 0 && isFinite(q[1])).sort((u, v) => Math.abs(Math.log(u[1] / t)) - Math.abs(Math.log(v[1] / t))).slice(0, 2);
+        let est = NaN;
+        if (good.length === 2 && Math.abs(Math.log(good[1][0] / good[0][0])) > 1e-9) {
+          const k = -Math.log(good[1][1] / good[0][1]) / Math.log(good[1][0] / good[0][0]);
+          if (k > 0.05) est = good[0][0] * Math.pow(good[0][1] / t, 1 / k);
+        } else if (good.length >= 1 && t > 0) est = good[0][0] * good[0][1] / t;   // alpha roughly proportional to 1/F
+        // which side to aim at: the proving side first, then the other side, then the side whose bracket end
+        // is further from the estimate
+        const wantProof = pf === null ? true : nf === null ? false : !(Math.abs(Math.log(est / pf)) <= Math.abs(Math.log(est / nf)));
+        const up = provenBelow ? !wantProof : wantProof;    // aim above the root?
+        let F = est * (up ? 1 + 0.4 * tol : 1 - 0.4 * tol);
+        const lo = provenBelow ? pf : nf, hi = provenBelow ? nf : pf;
+        if (!(F > 0) || !isFinite(F)) F = (pf !== null ? pf : nf) * (up ? 1.6 : 1 / 1.6);
+        if (lo !== null && F <= lo) F = hi !== null ? Math.sqrt(lo * hi) : lo * (1 + tol);
+        if (hi !== null && F >= hi) F = lo !== null ? Math.sqrt(lo * hi) : hi / (1 + tol);
+        if (near(F)) F = lo !== null && hi !== null ? Math.sqrt(lo * hi) : F * (up ? 1 + tol : 1 / (1 + tol));
+        F = Math.min(100, Math.max(0.01, F));
+        const a = await fn(F); n++;
+        if (Number.isNaN(a)) break;
+        pts.push([F, a]);
+        if (proven(a)) pf = F; else nf = F;
+        if ((F === 100 || F === 0.01) && (pf === null || nf === null)) break;
+      }
+      return { F: pf, other: nf };
+    };
+    const aLb1 = res.lb.valid ? res.lb.alpha : -Infinity;
+    const aUb1 = Math.min(res.dlo.valid ? res.dlo.alpha : Infinity, res.ub && res.ub.valid ? res.ub.alpha : Infinity);
+    // lower bound on FS: largest F with alpha_LB(F) >= t (safe side is "alpha above t")
+    let lo = await bracket(lbAt, 1, aLb1, (a) => a >= t, true);
+    // upper bound on FS: smallest F with alpha_UB(F) <= t
+    let hi = await bracket(ubAt, 1, aUb1, (a) => a <= t, false);
+    // If the bracket is still wide (typically a slope with little or no footing load, whose mechanism differs
+    // from the one the mesh was adapted to), re-run the adaptive analysis at the estimated factor of safety
+    // and bracket the lower bound again on that mesh.
+    if (opts.strength.remesh !== false && lo.F && hi.F && hi.F / lo.F > 1 + 3 * tol) {
+      const Fm = Math.sqrt(lo.F * hi.F);
+      say(`Factor of safety on strength: new mesh at F = ${Fm.toFixed(3)}`, 0.9); await tick();
+      const layers = prepared.layers.map((l) => { const o = Object.assign({}, l); delete o.psi; return o; });
+      const sub = Object.assign({}, opts, { strength: null, onProgress: null });
+      const r2 = await analyse(highs, Object.assign({}, prepared.input, { layers: reducedModel({ layers: layers }, Fm).layers }), sub);
+      const a2 = r2.lb && r2.lb.valid ? r2.lb.alpha : -Infinity, u2 = r2.best.alphaUb;
+      evals.push({ kind: "LB", F: Fm, alpha: a2 }, { kind: "UB", F: Fm, alpha: u2 });
+      if (u2 <= t && Fm < hi.F) hi = { F: Fm };
+      const mesh2 = r2.mesh, fe2 = r2.model;
+      const lb2 = await bracket(async (F) => {
+        say(`Factor of safety on strength: lower bound at F = ${F.toFixed(3)}`, 0.95); await tick();
+        const m = reducedModel(fe2, F / Fm), r = lowerBound(highs, m, mesh2, assignMaterials(m, mesh2), opts);
+        const a = r.valid ? r.alpha : -Infinity;
+        evals.push({ kind: "LB", F: F, alpha: a });
+        return a;
+      }, Fm, a2, (a) => a >= t, true);
+      if (lb2.F && lb2.F > lo.F) lo = lb2;
+    }
+    const out = { fsLb: lo.F == null ? 0 : lo.F, fsUb: hi.F == null ? NaN : hi.F, target: t, evals: evals };
+    if (hi.F == null) out.note = "The upper bound on the factor of safety on strength could not be bracketed.";
+    return out;
+  }
+
   const api = { analyse, prepare, geometry, onDomain, buildTriMesh, buildQuadMesh, initialCells, refineCells, assignMaterials,
-    lowerBound, upperBound, upperBoundDLO, dloAdaptive, dloVelocity, prandtlExtent, classical, sigmaV, unitWeightAt, soilAt,
+    lowerBound, upperBound, upperBoundQ, upperBoundDLO, dloAdaptive, dloVelocity, prandtlExtent, classical, sigmaV, unitWeightAt, soilAt,
     porePressure, statusText, fixedDepths, columnWeight };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FELA = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
