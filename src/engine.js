@@ -56,7 +56,7 @@
     const sl = m.slope;
     if (sl && sl.height > 1e-9 && sl.angle > 0) {
       const tb = Math.tan(sl.angle * Math.PI / 180);
-      g.tb = tb; g.xcReal = b + sl.dist; g.HsReal = sl.height;
+      g.tb = tb; g.xcReal = b + sl.dist; g.HsReal = sl.height; g.xtReal = g.xcReal + sl.height / tb;
       if (sl.height > m.D + 1e-9) {        // the slope face cuts below the footing base
         g.slope = true;
         g.xc = g.xcReal + m.D / tb; g.Hs = sl.height - m.D; g.xt = g.xc + g.Hs / tb;
@@ -768,6 +768,8 @@
        sigma_y, which never move a stress state closer to yield. Yield is checked at the boundary nodes
        and at the top of every deeper layer. */
     if (!opts.noExtension) {
+      // the extension beside the mesh is uniform in x, so the ground must be level from xR outwards
+      if (g.tb !== undefined && g.drop(model.xR) < g.HsReal - 1e-9 * Math.max(1, model.B)) throw new Error("Lower bound: the domain must extend past the toe of the slope");
       const sTop = sigmaV(model, model.D);
       // beside the mesh the vertical stress is geostatic under the ground there, with the surcharge g.qs that
       // actually acts on it (a slope lower than the embedment lowers the ground without reaching the base level)
@@ -1727,6 +1729,10 @@
       m.xR = Math.max(m.xR, m.geo.xt + 1.0 * m.B);
       m.H = Math.max(m.H, m.geo.Hs + 1.0 * m.B);
       m.geo = geometry(m);
+    } else if (m.geo.tb !== undefined && m.xR < m.geo.xtReal + 0.5 * m.B) {
+      // a slope no deeper than the embedment: the ground must be level again inside the mesh (see lowerBound)
+      m.xR = m.geo.xtReal + 0.5 * m.B;
+      m.geo = geometry(m);
     }
     m.ext = { xL: m.sym ? 0 : Math.max(m.xL, -ext.x * 1.1), xR: Math.min(m.xR, Math.max(ext.x * 1.1, m.geo.slope ? m.geo.xt : 0)), depth: Math.min(m.H, Math.max(ext.depth * 1.1, m.geo.slope ? m.geo.Hs : 0)) };
     m.phiDomain = phi;
@@ -1759,7 +1765,7 @@
     let t1 = Date.now();
     res.dlo = dloAdaptive(highs, model, opts); res.dlo.time = (Date.now() - t1) / 1000; done += 3;
     if (!res.dlo.lines) {
-      if (res.dlo.status === 10 || res.dlo.status === 9) throw new Error(model.loadFix.some((v) => v) ? "The fixed loads alone (with the ground's own weight) exceed the capacity: no multiplied load can be added. Reduce the fixed loads." : "The ground fails under its own weight before any footing load is applied. Check the slope angle against the soil strength.");
+      if ((res.dlo.status === 10 || res.dlo.status === 9) && !model.axisym) throw new Error(model.loadFix.some((v) => v) ? "The fixed loads alone (with the ground's own weight) exceed the capacity: no multiplied load can be added. Reduce the fixed loads." : "The ground fails under its own weight before any footing load is applied. Check the slope angle against the soil strength.");
       throw new Error("Upper bound solve failed (" + statusText(res.dlo.status) + ")");
     }
     // finite element domain sized from the mechanism, with room for the stress field to spread.
@@ -1767,6 +1773,7 @@
     const ex = res.dlo.extent, B = model.B, g0 = model.geo;
     let xR = Math.max(2.2 * ex.xR, 2.5 * B);
     if (g0.slope) xR = Math.max(xR, g0.xt + 0.75 * B);
+    else if (g0.tb !== undefined) xR = Math.max(xR, g0.xtReal + 0.5 * B);   // level ground beyond the mesh (see lowerBound)
     const xL = g0.sym ? 0 : Math.min(2.2 * ex.xL, -2.5 * B);
     let H = Math.max(2.8 * ex.depth, 1.5 * B);
     // below a slope the base must be deep enough for the topographic stress difference to spread by shear
@@ -1878,7 +1885,7 @@
     res.uBase = porePressure(model, model.D);
     res.sym = g0.sym;
     // collapse loads are totals per unit length for the whole footing: F = Ffix + alpha Fref
-    const aLb = res.lb && res.lb.valid ? res.lb.alpha : (res.lb && res.lb.infeasible ? 0 : NaN);
+    const aLb = res.lb && res.lb.valid ? res.lb.alpha : NaN;   // an infeasible lower-bound problem proves nothing
     const aUb = ubs.length ? ubs[0][1] : NaN;
     const at = (a, k) => fr.fix[k] + a * fr.ref[k];
     // pressures: per unit length / B (plane strain), or force / (pi B^2 / 4) (axisymmetric)
@@ -1887,7 +1894,7 @@
     res.best = { mode: model.loadMode, alphaLb: aLb, alphaUb: aUb, lb: at(aLb, 0) / per, ub: at(aUb, 0) / per, ubMethod: ubs.length ? ubs[0][0] : "", axisym: axi,
       Vlb: at(aLb, 0), Vub: at(aUb, 0), Hlb: at(aLb, 1), Hub: at(aUb, 1), Mlb: at(aLb, 2), Mub: at(aUb, 2),
       ref: fr.ref, fix: fr.fix, tanA: fr.tanA, e: fr.e, mech: ubs.length ? ubs[0][2].footing : null };
-    if (res.lb && !res.lb.valid) res.warnings.push(res.lb.infeasible ? "No statically admissible stress field exists for this load direction, so the lower bound is zero." : "The lower-bound solve did not reach a feasible solution (" + statusText(res.lb.status) + "), so no lower bound is reported.");
+    if (res.lb && !res.lb.valid) res.warnings.push(res.lb.infeasible ? "No statically admissible stress field was found on this mesh, so no lower bound is reported." : "The lower-bound solve did not reach a feasible solution (" + statusText(res.lb.status) + "), so no lower bound is reported.");
     if (!ubs.length) res.warnings.push("No upper-bound solve reached a feasible solution.");
     if (res.dlo.touches && (res.dlo.touches.left || res.dlo.touches.right || res.dlo.touches.base)) res.warnings.push("The mechanism still reaches the edge of the largest domain tried; the upper bound may be loose.");
     if (aUb <= 0) res.warnings.push("The upper bound is zero or negative: the ground fails under its own weight" + (fr.fix.some((v) => v) ? " and the fixed loads." : "."));

@@ -111,7 +111,14 @@ g. **Independent review of PR #1 (2026-10-25).** Three critical lower-bound bugs
 2. The stress field beside the mesh assumed the full surcharge where a slope lowers the ground without reaching the base level. That inflated an LB by 18% in one test and made the LB problem infeasible in another.
 3. The strength factor of safety of a circular (axisymmetric) footing used the plane-strain solvers and units. It reported 4.1 to 4.4 against an exact 2.0.
 
-Three guards were also added: a negative sᵤ gradient is rejected, the axisymmetric analysis no longer falls back to the non-conforming quadtree mesh, and an "unbounded or infeasible" status no longer counts as proof of collapse. Open minor points:
+Three guards were also added: a negative sᵤ gradient is rejected, the axisymmetric analysis no longer falls back to the non-conforming quadtree mesh, and an "unbounded or infeasible" status no longer counts as proof of collapse.
+
+A second review of these fixes found two more lower-bound gaps, also fixed:
+
+1. Where a slope is no deeper than the embedment, the mesh could stop short of the slope toe, so the stress field beside it (which is uniform in x) assumed a surcharge the ground no longer carries beyond the edge. In a test with a hand-set domain the LB was 239.5 kN/m against an upper bound of 234.3. The domain now always reaches past the toe, and the lower bound refuses a domain that does not (regression case "toe").
+2. An infeasible lower-bound problem was reported as a lower bound of zero. It proves nothing, so no lower bound is now reported.
+
+Open minor points:
 
 1. Layer bottoms and the water table are snapped by up to 0.01B to the base level or to each other.
 2. Strength reduction leaves the tensile limit unreduced.
