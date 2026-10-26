@@ -76,20 +76,20 @@ const CASES = {
   }, ref: NaN, kind: "approx", note: "2 m clay slope beside a footing 2 m deep (forces per metre)" },
   // the solver paths: exact cones with check-only cut-off cones, a forced upper-bound fallback to HiGHS, a
   // primal infeasible lower bound (as strengthFS meets when the reduced soil cannot carry its own weight), and
-  // HiGHS alone (the --no-cone path, kept in the default run)
-  cutoffW: { run: async (highs) => {
+  // HiGHS alone (the --no-cone path, kept in the default run); "cone" cases are skipped with --no-cone
+  cutoffW: { cone: true, run: async (highs) => {
     const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, layers: L1({ c: 10, phi: 20, kt: 0, gamma: 18 }) }, 0, 6, 3);
     const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
     const ub = FELA.upperBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
     return { lb: lb.qu, ub: ub.qu, checks: [["LB from Clarabel with check-only cut-off cones", lb.valid && lb.solver === "Clarabel" && lb.checkOnly > 0]] };
   }, ref: NaN, kind: "approx", note: "zero tension cut-off, weighty: traction-free cut-off cones solved as rows" },
-  ubFallback: { run: async (highs) => {
+  ubFallback: { cone: true, run: async (highs) => {
     const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, 0, 5, 3);
     const ub = FELA.upperBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3, coneMaxIter: 3 });
     const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
     return { lb: lb.qu, ub: ub.qu, checks: [["UB falls back to HiGHS", ub.valid && ub.solver === "HiGHS" && /iteration limit/.test(ub.fallback || "")]] };
   }, ref: 514.2, kind: "rigorous", note: "Clarabel stopped after 3 iterations: upper bound from HiGHS" },
-  infeasible: { run: async (highs) => {
+  infeasible: { cone: true, run: async (highs) => {
     const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, slope: { dist: 0, height: 4, angle: 60 }, layers: L1({ c: 2, phi: 0, gamma: 18 }) }, -6, 12, 9);
     const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
     return { lb: 0, ub: 0, checks: [["no lower bound from an infeasible problem", !lb.valid && lb.infeasible && /primal infeasible/.test(lb.fallback || "")]] };
@@ -125,6 +125,7 @@ const AXI = {
   for (const k of names) {
     const c = CASES[k];
     if (!c) { console.log(`unknown case ${k}`); fails++; continue; }
+    if (c.cone && args.includes("--no-cone")) { console.log(`skip ${k.padEnd(7)} (tests the Clarabel path)`); continue; }
     const t = Date.now();
     const o = Object.assign({}, OPTS[mode], c.axi ? AXI[mode] : {}, c.opts || {});
     if (!o.nu) delete o.nu;

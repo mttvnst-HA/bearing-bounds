@@ -618,13 +618,15 @@
     let i0 = 0;
     zr.forEach((q) => (b[i0++] = q[3])); nr.forEach((q) => (b[i0++] = q[3]));
     socKeep.forEach((s) => lp.soc[s].forEach((fm, u) => { let c = fm.c; fm.idx.forEach((j, k) => { if (isFix[j]) c += fm.val[k] * fixed[j]; }); b[i0++] = (u ? 1 : shrink) * c; }));
-    const q = new Float64Array(n), sg = sense === "max" ? -1 : 1;
-    for (let j = 0; j < n0; j++) if (!isFix[j]) q[col[j]] = sg * lp.cost[j];
+    // objective, with the solve-only steering costs (lp.solveCost) times f
+    const sg = sense === "max" ? -1 : 1;
+    const costs = (f) => { const q = new Float64Array(n); for (let j = 0; j < n0; j++) if (!isFix[j]) q[col[j]] = sg * (lp.cost[j] + f * (lp.solveCost ? lp.solveCost.get(j) || 0 : 0)); return q; };
     const tol = opts.coneTol || 1e-7;
     const colPtr = Uint32Array.from(cnt), socDims = Uint32Array.from(socKeep, () => 3);
     let iters = 0;
     // one Clarabel solve and the check of its point
-    const attempt = (reg) => {
+    const attempt = (reg, f) => {
+      const q = costs(f);
       // settings: max_iter, time_limit, tol_gap_abs, tol_gap_rel, tol_feas, tol_ktratio, verbose, equilibrate,
       // presolve, static regularisation (see wasm/clarabel/src/lib.rs)
       const settings = Float64Array.from([opts.coneMaxIter || 100, opts.timeLimit || 600, tol, tol, opts.coneFeasTol || 1e-9, 1e-7, globalThis.__LPLOG ? 1 : 0, 1, 1, reg]);
@@ -647,12 +649,15 @@
       if (status === 4 && !(gap <= (opts.coneGapAccept || 1e-3))) return fail("Clarabel almost solved with a duality gap of " + gap.toExponential(1), info);
       // the point in the original variables
       const x = new Float64Array(n0);
-      for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : Math.min(lp.up[j], Math.max(lp.lo[j], out[5 + col[j]]));
+      // (not clamped into the variable bounds: a clamp of 1e-7 on a variable with large row coefficients moves
+      // those rows by more than the check allows; the bounds are checked with the same rule as the rows)
+      for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : out[5 + col[j]];
       // dual of the first component of every cone (a plastic multiplier; 0 for dropped cones)
       const zs = new Float64Array(lp.soc.length), zBase = 5 + n + zr.length + nr.length;
       socKeep.forEach((s, k) => (zs[s] = out[zBase + 3 * k]));
       // check every constraint at x
       let rowViol = 0, coneViol = 0;
+      for (let j = 0; j < n0; j++) rowViol = Math.max(rowViol, lp.lo[j] - x[j], x[j] - lp.up[j]);
       for (let r = 0; r < R; r++) {
         let ax = 0; for (let k = lp.rs[r]; k < lp.rs[r + 1]; k++) ax += lp.rv[k] * x[lp.ri[k]];
         rowViol = Math.max(rowViol, lp.rlo[r] - ax, ax - lp.rup[r]);
@@ -667,8 +672,8 @@
     // Clarabel's default static regularisation first. When that gives no accepted point (a numerical error,
     // or an "almost solved" stall whose point misses the check, as on the axisymmetric lower bound and some
     // 6-node upper bounds), a larger regularisation usually converges cleanly.
-    let r = attempt(1e-8);
-    if (!r.valid && CONIC && r.reason !== "Clarabel rejected the problem data") r = attempt(1e-7);
+    let r = attempt(1e-8, 1);
+    if (!r.valid && CONIC && r.reason !== "Clarabel rejected the problem data") r = attempt(1e-7, 10);
     // as in runLP, a lower bound of zero or less is suspect: let HiGHS try
     if (r.valid && sense === "max" && !(r.obj > 0)) return fail("the cone solution gave a load multiplier of zero or less", { coneStatus: r.coneStatus, iterations: r.iterations, gap: r.gap });
     return r;
@@ -692,7 +697,9 @@
       if (CONIC && opts.cone !== false) {
         const t = Date.now();
         let r = null, why = "";
-        try { r = fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: true })); } catch (e) { why = "Clarabel failed: " + (e && e.message ? e.message : e); }
+        // stress scale of the problem, for the cohesion floor that steers the upper-bound solve (addFlowUB)
+        const sScale = model.B * Math.max(0, ...model.layers.map((l) => Math.max(l.gamma || 0, l.gammaSat || 0))) + Math.max(0, ...model.layers.map((l) => l.c || 0)) + Math.abs(model.q0 || 0);
+        try { r = fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: true, _ctFloor: (opts.coneCtFloor == null ? 1e-3 : opts.coneCtFloor) * sScale })); } catch (e) { why = "Clarabel failed: " + (e && e.message ? e.message : e); }
         if (r && r.valid) return r;
         if (r === null && !why) return null;
         const r2 = fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: false }));
@@ -843,6 +850,11 @@
         // eps = (st y0 - k1 y1, st y0 + k1 y1, -2 y2, sth y0), the dissipation is at most ct y0 + c1 y1
         const y = [0, 1, 2].map(() => lp.addVar(-Infinity, Infinity, 0));
         lp.cost[y[0]] = cn.ct * area; lp.cost[y[1]] = cn.c1 * area;
+        // In cohesionless soil (ct = 0) the multipliers cost nothing, and combinations of cones that cancel in
+        // the flow rule can grow without bound, which stalls the interior-point solver. Clarabel is given a
+        // small cost on y0 there (opts._ctFloor); the bound is recomputed from the true costs, so this only
+        // steers which admissible mechanism is found.
+        if (cn.ct < (opts._ctFloor || 0)) (lp.solveCost || (lp.solveCost = new Map())).set(y[0], opts._ctFloor * area);
         rowsS[0].push([y[0], cn.st], [y[1], -cn.k1]); rowsS[1].push([y[0], cn.st], [y[1], cn.k1]); rowsS[2].push([y[2], -2]);
         if (nc === 4) rowsS[3].push([y[0], cn.sth || 0]);
         lp.addSOC(y.map((v) => [[v], [1], 0]));
