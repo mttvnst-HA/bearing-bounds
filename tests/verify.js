@@ -39,7 +39,7 @@ const CASES = {
   layerbase: { run: async (highs) => {
     const m = FELA.onDomain(FELA.prepare(Object.assign({ gammaW: 9.81, waterDepth: null }, TWO_CLAY)), 0, 5, 1.0, { xL: 0, xR: 3, depth: 1.0 });
     const mesh = FELA.buildTriMesh(m, FELA.initialCells(m, 6), { nTheta: 12, r0: 0.08, R: 1 });
-    const lb = FELA.lowerBound(highs, m, mesh, FELA.assignMaterials(m, mesh), { p: 18, ipmTol: 1e-5 });
+    const lb = FELA.lowerBound(highs, m, mesh, FELA.assignMaterials(m, mesh), { p: 18, ipmTol: 1e-3 });
     const ub = FELA.dloAdaptive(highs, FELA.prepare(Object.assign({ gammaW: 9.81, waterDepth: null }, TWO_CLAY)), { dloNodes: 300 });
     return { lb: lb.qu, ub: ub.qu, checks: [["LB valid", lb.valid]] };
   }, ref: NaN, kind: "approx", note: "su 100 to 1 m over su 5, mesh base on the boundary" },
@@ -48,7 +48,7 @@ const CASES = {
     const m0 = Object.assign({ gammaW: 9.81, waterDepth: null }, STEP), m = FELA.prepare(m0);
     const mm = FELA.onDomain(m, -6, 6, 4, { xL: -4, xR: 4, depth: 3 });
     const mesh = FELA.buildTriMesh(mm, FELA.initialCells(mm, 6), { nTheta: 12, r0: 0.08, R: 1 });
-    const lb = FELA.lowerBound(highs, mm, mesh, FELA.assignMaterials(mm, mesh), { p: 18, ipmTol: 1e-5 });
+    const lb = FELA.lowerBound(highs, mm, mesh, FELA.assignMaterials(mm, mesh), { p: 18, ipmTol: 1e-3 });
     const ub = FELA.dloAdaptive(highs, m, { dloNodes: 300 });
     return { lb: lb.V, ub: ub.V, checks: [["LB valid and positive", lb.valid && lb.V > 0]] };
   }, ref: NaN, kind: "approx", note: "1.9 m slope beside a footing 2 m deep (forces per metre)" },
@@ -59,8 +59,8 @@ const CASES = {
 };
 // the same settings as the app (src/app.html QOPTS and QAXI)
 const OPTS = {
-  quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false, ipmTol: 1e-5 },
-  std: { p: 24, nu: 4, dloNodes: 420, targetElems: 1800, adaptCycles: 2, feQuad: true, feFrictional: true, ipmTol: 1e-5 },
+  quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false, ipmTol: 1e-3 },
+  std: { p: 24, nu: 4, dloNodes: 420, targetElems: 1800, adaptCycles: 2, feQuad: true, feFrictional: true, ipmTol: 1e-3 },
 };
 const AXI = {
   quick: { p: 12, targetElems: 350, nTheta: 6, nf: 2, fanR0: 0.1, adaptCycles: 1, nu: 0 },

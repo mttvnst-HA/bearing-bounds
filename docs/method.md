@@ -48,7 +48,9 @@ h. Non-strip footings other than the axisymmetric circle scale the plane-strain 
 
 i. The summary also shows the mean of the bounds with ± half the gap, labelled as an estimate (from OptumG2's verification and validation section). Where the upper bound is further from the true value than the lower bound, as for self-weight in cohesionless soil, the mean reads high.
 
-j. LP status: a bound is accepted only from a feasible primal point. If the interior-point solver stops without proving optimality and gives a lower bound of zero or less, the LP is re-solved with crossover.
+j. LP status: a bound is accepted only from a feasible primal point. If the interior-point solver stops without proving optimality and gives a lower bound of zero or less, the LP is re-solved with crossover. The interior-point optimality tolerance is 1e-3: a bound needs only a feasible point, and tests showed the same feasibility (1e-7 or better) with objectives within 0.07% and solves 10 to 20% faster.
+
+k. Speed: in the browser app, the lower and upper bound of each adaptive cycle are solved at the same time, each in its own child worker with its own WebAssembly copy of HiGHS. This roughly halves a Standard run (5:23 to 3:03 on a test case). If child workers are not available the solves run one after the other, and the solution detail says so. In Node (the tests) they always run one after the other.
 
 ## Verification (Standard mesh)
 
@@ -101,7 +103,18 @@ d. **Independent UX review (2026-10-25).** Ten findings, all implemented:
 
 e. **Collapse animation (2026-10-25).** The load ramps up through the bounds, then the upper-bound mechanism plays out with exaggerated motion.
 
-f. **OptumG2 manual review and changes (2026-10-25).** A review of the OptumG2 Analysis, Theory, Materials, Features and Results manuals led to twelve recommendations, all implemented: the lifted yield polygon, adaptive mesh cycles, the 6-node finite element upper bound, fixed and multiplied loads, the base interface factor, Davis parameters, the strength factor of safety, optional slope fans, a tension cut-off, the mean of the bounds, axisymmetric bounds for circular footings, and anisotropic undrained strength with a note that sᵤ is the plane-strain (direct simple shear) strength. One bug found during the work (misaligned auxiliary coefficients in the lifted polygon, which made the lower bound zero) was fixed before release. These changes have been verified against the cases below but not independently reviewed.
+f. **OptumG2 manual review and changes (2026-10-25).** A review of the OptumG2 Analysis, Theory, Materials, Features and Results manuals led to twelve recommendations, all implemented: the lifted yield polygon, adaptive mesh cycles, the 6-node finite element upper bound, fixed and multiplied loads, the base interface factor, Davis parameters, the strength factor of safety, optional slope fans, a tension cut-off, the mean of the bounds, axisymmetric bounds for circular footings, and anisotropic undrained strength with a note that sᵤ is the plane-strain (direct simple shear) strength. One bug found during the work (misaligned auxiliary coefficients in the lifted polygon, which made the lower bound zero) was fixed before release. These changes were verified against the cases below and then reviewed independently (item g).
+
+g. **Independent review of PR #1 (2026-10-25).** Three critical lower-bound bugs were found and fixed, each with a regression case that fails on the earlier code:
+
+1. A layer whose top lay exactly at the mesh base was never yield-checked below the mesh (issue #2). In the test the LB was 389.8 kPa against a valid UB of 171.1.
+2. The stress field beside the mesh assumed the full surcharge where a slope lowers the ground without reaching the base level. That inflated an LB by 18% in one test and made the LB problem infeasible in another.
+3. The strength factor of safety of a circular (axisymmetric) footing used the plane-strain solvers and units. It reported 4.1 to 4.4 against an exact 2.0.
+
+Three guards were also added: a negative sᵤ gradient is rejected, the axisymmetric analysis no longer falls back to the non-conforming quadtree mesh, and an "unbounded or infeasible" status no longer counts as proof of collapse. Open minor points:
+
+1. Layer bottoms and the water table are snapped by up to 0.01B to the base level or to each other.
+2. Strength reduction leaves the tensile limit unreduced.
 
 ## Known limits
 

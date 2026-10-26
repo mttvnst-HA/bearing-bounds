@@ -379,11 +379,12 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   const QUAL = [["quick", "Quick"], ["std", "Standard"], ["fine", "Fine"]];
   const QHINT = { quick: "Quick: about 20–40 s; a circular footing analysed axisymmetrically about 2–3 min. Good for trying options.", std: "Standard: about 2–7 min (circular, axisymmetric: about 5 min). Two adaptive mesh cycles and a finer yield surface; tighter bounds.", fine: "Fine: about 10–20 min (circular, axisymmetric: 10 min or more). Three adaptive mesh cycles; tightest bounds; uses the most memory." };
   // nu: lifted (Ben-Tal and Nemirovski) yield polygon with 2^(nu+1) sides; adaptCycles: adaptive mesh cycles;
-  // feQuad: 6-node finite element upper bound (also run for frictional soil when feFrictional)
+  // feQuad: 6-node finite element upper bound (also run for frictional soil when feFrictional);
+  // ipmTol: a loose interior-point optimality tolerance is safe because a bound needs only a feasible point
   const QOPTS = {
-    quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false, ipmTol: 1e-5 },
-    std: { p: 24, nu: 4, dloNodes: 420, targetElems: 1800, adaptCycles: 2, feQuad: true, feFrictional: true, ipmTol: 1e-5 },
-    fine: { p: 24, nu: 5, dloNodes: 480, targetElems: 2600, adaptCycles: 3, feQuad: true, feFrictional: true, ipmTol: 1e-5 }
+    quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false, ipmTol: 1e-3 },
+    std: { p: 24, nu: 4, dloNodes: 420, targetElems: 1800, adaptCycles: 2, feQuad: true, feFrictional: true, ipmTol: 1e-3 },
+    fine: { p: 24, nu: 5, dloNodes: 480, targetElems: 2600, adaptCycles: 3, feQuad: true, feFrictional: true, ipmTol: 1e-3 }
   };
   // the axisymmetric solves are larger per element
   const QAXI = {
@@ -741,26 +742,42 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       }
       return { nx: nx, ny: ny, g: grid, vmax: vmax, xL: xL, W: W, H: H, arrows: arrows, amax: amax, cell: Math.min(W / ax, H / ay) };
     }
+    // a finite element solve in a child worker of its own (own WebAssembly instance), discarded afterwards
+    // (the child script is a Blob URL made here: a page opened from a file has origin "null", and a worker
+    // cannot start a child from the page's own Blob URL then)
+    let childUrl = null;
+    function solveInChild(job, bytes, src) {
+      return new Promise((resolve, reject) => {
+        if (!childUrl) childUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+        const w = new Worker(childUrl);
+        w.onmessage = (ev) => { w.terminate(); if (ev.data.type === "job-done") resolve(ev.data.r); else reject(new Error(ev.data.message)); };
+        w.onerror = (e) => { w.terminate(); if (e && e.preventDefault) e.preventDefault(); reject(new Error((e && e.message) || "child worker failed")); };
+        const b = bytes.slice();
+        w.postMessage({ job: job, bytes: b }, [b.buffer]);
+      });
+    }
     self.onmessage = async (ev) => {
       const d = ev.data;
       try {
         const highs = await Module({ instantiateWasm: (imports, done) => { WebAssembly.instantiate(d.bytes, imports).then((r) => done(r.instance)); return {}; } });
+        if (d.job) { self.postMessage({ type: "job-done", r: FELA.runJob(highs, d.job) }); return; }
         const opts = Object.assign({}, d.opts, { onProgress: (t, f) => self.postMessage({ type: "progress", t: t, f: f }) });
+        if (typeof Worker !== "undefined" && d.src) opts.parallel = (jobs) => Promise.all(jobs.map((j) => solveInChild(j, d.bytes, d.src)));
         const r = await FELA.analyse(highs, d.model, opts);
         r.velGrid = velocityGrid(r);
         delete r.model.geo;
         if (r.mats) r.mats = null;
         self.postMessage({ type: "done", r: r });
       } catch (e) {
-        self.postMessage({ type: "error", message: e && e.message ? e.message : String(e) });
+        self.postMessage({ type: d && d.job ? "job-error" : "error", message: e && e.message ? e.message : String(e) });
       }
     };
   `;
-  let workerUrl = null, worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
+  let workerUrl = null, workerSrc = "", worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
   function makeWorker() {
     if (!workerUrl) {
-      const src = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
-      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+      workerSrc = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
+      workerUrl = URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
     }
     return new Worker(workerUrl);
   }
@@ -782,6 +799,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     const n = (feLikely ? 3 : 2) + (sf ? 1 : 0), cyc = (t.match(/cycle (\d+ of \d+)/) || [])[1];
     const tail = cyc ? ", mesh cycle " + cyc : "";
     if (/discontinuity/i.test(t)) return { k: 1, n, txt: "finding the collapse mechanism (upper bound)" };
+    if (/in parallel/i.test(t)) return { k: 2, n, txt: "safe stress field and finite element upper bound, side by side" + tail };
     if (/Lower bound/i.test(t)) return { k: 2, n, txt: "building a safe stress field (lower bound)" + tail };
     if (/finite elements/i.test(t)) return { k: 3, n, txt: "checking the upper bound with finite elements" + tail };
     if (/strength/i.test(t)) return { k: n, n, txt: "factor of safety on strength" + ((t.match(/F = [0-9.]+/) || [])[0] ? " (trying " + t.match(/F = [0-9.]+/)[0] + ")" : "") };
@@ -844,7 +862,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       setStatus("The solver ran out of memory or crashed" + (e && e.message ? " (" + e.message + ")" : "") + ". Use the Quick or Standard mesh.", true);
     };
     const bytes = wasmBytes.slice();
-    worker.postMessage({ bytes: bytes, model: m, opts: opts }, [bytes.buffer]);
+    worker.postMessage({ bytes: bytes, model: m, opts: opts, src: workerSrc }, [bytes.buffer]);
   }
   const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   $("form").addEventListener("submit", run);
@@ -951,7 +969,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       ["Pore pressure at base (included in gross)", fmtP(b.uB) + " " + u],
       ["Lower-bound mesh", fmt(r.mesh.nE) + " triangles" + (r.cycles && r.cycles.length > 1 ? ", after " + r.cycles.length + " adaptive cycles (" + r.cycles.map((c) => fmt(c.nE)).join(" → ") + ")" : "")],
       ["Upper-bound layout", fmt(r.dlo.nodes.length) + " nodes, " + fmt(r.dlo.nLines) + " lines"],
-      ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s"],
+      ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s" + (r.parallelUsed && !r.parallelFailed ? "; finite element bounds solved in parallel" : r.parallelFailed ? "; solved one after the other (parallel workers unavailable: " + r.parallelFailed + ")" : "")],
       ["Discontinuity layout UB", r.axisym ? "plane-strain mechanism, used only to size the model" : fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)")]
     ];
     if (r.ub) rows.push(["Finite element UB", (r.axisym ? fmtP(r.ub.qu) : fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B)) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" && !r.axisym ? ", run for the " + r.feReason : "")]);

@@ -1821,18 +1821,36 @@
     for (let cyc = 0; cyc < cycles; cyc++) {
       const mats = assignMaterials(model, mesh);
       const tag = cycles > 1 ? ` – cycle ${cyc + 1} of ${cycles}` : "";
+      const lbName = axi ? "axiLowerBound" : "lowerBound";
+      const ubName = axi ? "axiUpperBound" : opts.feQuad && mesh.conforming ? "upperBoundQ" : "upperBound";
       let lb = null, ub = null;
-      if (wantLB) {
+      // The lower and upper bound on one mesh are independent, so when the host can run solves in parallel
+      // (the browser app gives each its own worker and WebAssembly instance) they run together.
+      if (wantLB && wantFE && opts.parallel) {
+        say(`Lower bound and upper bound in parallel: finite elements (${mesh.nE} elements)${tag}`, (done + 3 * cyc / cycles) / total); await tick();
+        try {
+          const plainModel = Object.assign({}, model); delete plainModel.geo;
+          const plainOpts = JSON.parse(JSON.stringify(Object.assign({}, opts, { onProgress: null, parallel: null, strength: null })));
+          [lb, ub] = await opts.parallel([lbName, ubName].map((fn) => ({ fn: fn, model: plainModel, mesh: mesh, opts: plainOpts })));
+          res.parallelUsed = true;
+        } catch (e) { lb = ub = null; res.parallelFailed = e && e.message ? e.message : String(e); }
+      }
+      if (wantLB && !lb) {
         say(`Lower bound: finite element limit analysis (${mesh.nE} elements)${tag}`, (done + 3 * cyc / cycles) / total); await tick();
         t1 = Date.now();
-        lb = (axi ? axiLowerBound : lowerBound)(highs, model, mesh, mats, opts); lb.time = (Date.now() - t1) / 1000;
+        lb = api[lbName](highs, model, mesh, mats, opts); lb.time = (Date.now() - t1) / 1000;
+      }
+      if (lb) {
         lb.mesh = mesh;
         if (!res.lb || (lb.valid && (!res.lb.valid || lb.V > res.lb.V)) || (!res.lb.valid && !lb.valid)) res.lb = lb;
       }
-      if (wantFE) {
+      if (wantFE && !ub) {
         say(`Upper bound: finite elements (${mesh.nE} elements)${tag}`, (done + 3 * (cyc + 0.5) / cycles) / total); await tick();
         t1 = Date.now();
-        ub = (axi ? axiUpperBound : opts.feQuad && mesh.conforming ? upperBoundQ : upperBound)(highs, model, mesh, mats, opts); ub.time = (Date.now() - t1) / 1000;
+        ub = api[ubName](highs, model, mesh, mats, opts);
+        if (ub) ub.time = (Date.now() - t1) / 1000;
+      }
+      if (ub) {
         ub.mesh = mesh;
         if (!res.ub || (ub.valid && (!res.ub.valid || ub.V < res.ub.V)) || (!res.ub.valid && !ub.valid)) res.ub = ub;
         res.feReason = opts.feUpper === true ? "requested" : (!g0.sym ? "combined load or slope" : "layered profile");
@@ -1985,7 +2003,14 @@
     return out;
   }
 
-  const api = { analyse, prepare, geometry, onDomain, buildTriMesh, buildQuadMesh, initialCells, refineCells, assignMaterials,
+  // run one finite element solve from plain (cloned) data, as sent to a parallel worker
+  function runJob(highs, job) {
+    const m = job.model; m.geo = geometry(m);
+    const t = Date.now(), r = api[job.fn](highs, m, job.mesh, assignMaterials(m, job.mesh), job.opts);
+    if (r) { r.time = (Date.now() - t) / 1000; delete r.mesh; }
+    return r;
+  }
+  const api = { analyse, runJob, axiLowerBound, axiUpperBound, prepare, geometry, onDomain, buildTriMesh, buildQuadMesh, initialCells, refineCells, assignMaterials,
     lowerBound, upperBound, upperBoundQ, upperBoundDLO, dloAdaptive, dloVelocity, prandtlExtent, classical, sigmaV, unitWeightAt, soilAt,
     porePressure, statusText, fixedDepths, columnWeight };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FELA = api;
