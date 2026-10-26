@@ -94,7 +94,7 @@ Standard mesh: exact cones (Clarabel) with the 32-sided lifted polygon and HiGHS
 | Circular, rough, undrained, axisymmetric, FS at half capacity (exact 2.0) | 2.0 | 0.973 | 1.045 | 0.964 / 1.053 | 81 | 540 |
 | Circular, rough, undrained, axisymmetric (Nc = 6.05, Eason and Shield) | 605 | 0.977 | 1.041 | 0.968 / 1.049 | 24 | 172 |
 
-Every bound in the cone column came from Clarabel except the zero tension cut-off lower bound, which falls back to HiGHS (see Exact cones g). The whole Standard verification (17 analysed cases plus two fixed-mesh regression cases) took 18.8 minutes with cones against 143 minutes with HiGHS only (7.6 times faster; 11 times without the cut-off case). On the Quick mesh it took 5.0 minutes against 14.7. Every lower bound is equal or higher with cones, except the cut-off case, whose HiGHS fallback ran on a slightly different adaptive mesh; every upper bound is equal or lower.
+Every bound in the cone column came from Clarabel except the zero tension cut-off lower bound, which falls back to HiGHS (see Exact cones g). The whole Standard verification (17 analysed cases plus two fixed-mesh regression cases) took 18.8 minutes with cones against 143 minutes with HiGHS only (7.6 times faster; 11 times without the cut-off case). On the Quick mesh it took 5.0 minutes against 14.7. The φ′ = 40° self-weight case (run only on request) was not re-run; its last values were LB 0.887 and UB 1.171 (HiGHS). The "toe" regression case (a slope no deeper than the embedment) was added after these timings. Every lower bound is equal or higher with cones, except the cut-off case, whose HiGHS fallback ran on a slightly different adaptive mesh; every upper bound is equal or lower.
 
 Frictional circular footings have no exact reference here. Two consistency checks (axisymmetric, about 650 elements): a weightless smooth circle at φ′ = 30° with surcharge gives N_q from 25.8 to 34.1, which brackets the usual estimate of about 29 (strip 18.4 × Vesić s_q = 1.58); a rough circle on weighty sand at φ′ = 30° gives N_γ (on ½γB) from 12.1 to 20.1. The upper bound is loose for frictional self-weight. These frictional axisymmetric results need the independent review in the backlog before design use.
 
@@ -131,7 +131,14 @@ g. **Independent review of PR #1 (2026-10-25).** Three critical lower-bound bugs
 2. The stress field beside the mesh assumed the full surcharge where a slope lowers the ground without reaching the base level. That inflated an LB by 18% in one test and made the LB problem infeasible in another.
 3. The strength factor of safety of a circular (axisymmetric) footing used the plane-strain solvers and units. It reported 4.1 to 4.4 against an exact 2.0.
 
-Three guards were also added: a negative sᵤ gradient is rejected, the axisymmetric analysis no longer falls back to the non-conforming quadtree mesh, and an "unbounded or infeasible" status no longer counts as proof of collapse. Open minor points:
+Three guards were also added: a negative sᵤ gradient is rejected, the axisymmetric analysis no longer falls back to the non-conforming quadtree mesh, and an "unbounded or infeasible" status no longer counts as proof of collapse.
+
+A second review of these fixes found two more lower-bound gaps, also fixed:
+
+1. Where a slope is no deeper than the embedment, the mesh could stop short of the slope toe, so the stress field beside it (which is uniform in x) assumed a surcharge the ground no longer carries beyond the edge. In a test with a hand-set domain the LB was 239.5 kN/m against an upper bound of 234.3. The domain now always reaches past the toe, and the lower bound refuses a domain that does not (regression case "toe").
+2. An infeasible lower-bound problem was reported as a lower bound of zero. It proves nothing, so no lower bound is now reported.
+
+Open minor points:
 
 1. Layer bottoms and the water table are snapped by up to 0.01B to the base level or to each other.
 2. Strength reduction leaves the tensile limit unreduced.

@@ -19,6 +19,7 @@ const davis = (() => { const f = 25 * Math.PI / 180, s = 5 * Math.PI / 180, b = 
 // axi: axisymmetric (circular footing); the reference is a pressure on the circle
 const TWO_CLAY = { B: 2, D: 0, rough: true, layers: [{ bottom: 1, c: 100, phi: 0, gamma: 0, gammaSat: 0 }, { bottom: 1e9, c: 5, phi: 0, gamma: 0, gammaSat: 0 }] };
 const STEP = { B: 2, D: 2, rough: true, surcharge: 0, slope: { dist: 0, height: 1.9, angle: 30 }, layers: L1({ c: 0, phi: 35, gamma: 18 }) };
+const TOE = { B: 2, D: 2, rough: true, surcharge: 0, slope: { dist: 0, height: 2, angle: 45 }, layers: L1({ c: 20, phi: 0, gamma: 18 }) };
 const CASES = {
   tresca: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, ref: 514.2, kind: "rigorous", note: "Prandtl Nc = 5.14" },
   nc20: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 10, phi: 20, gamma: 0 }) }, ref: 148.35, kind: "rigorous", note: "c' = 10, phi' = 20, weightless" },
@@ -54,6 +55,19 @@ const CASES = {
     const ub = FELA.dloAdaptive(highs, m, { dloNodes: 300 });
     return { lb: lb.V, ub: ub.V, checks: [["LB valid and positive", lb.valid && lb.V > 0]] };
   }, ref: NaN, kind: "approx", note: "1.9 m slope beside a footing 2 m deep (forces per metre)" },
+  // a slope no deeper than the embedment: the mesh must reach past its toe, and a domain that stops short is refused
+  toe: { run: async (highs) => {
+    const m0 = Object.assign({ gammaW: 9.81, waterDepth: null }, TOE), m = FELA.prepare(m0);
+    let refused = false;
+    try {
+      const mm = FELA.onDomain(m, -6, 1.5, 4, { xL: -4, xR: 1.5, depth: 3 });
+      const mesh = FELA.buildTriMesh(mm, FELA.initialCells(mm, 6), { nTheta: 12, r0: 0.08, R: 1 });
+      FELA.lowerBound(highs, mm, mesh, FELA.assignMaterials(mm, mesh), { p: 18 });
+    } catch (e) { refused = /toe/.test(e.message); }
+    const r = await FELA.analyse(highs, m0, Object.assign({}, OPTS.quick));
+    const ub = FELA.dloAdaptive(highs, m, { dloNodes: 600 });
+    return { lb: r.best.Vlb, ub: Math.min(r.best.Vub, ub.V), checks: [["short domain refused", refused]] };
+  }, ref: NaN, kind: "approx", note: "2 m clay slope beside a footing 2 m deep (forces per metre)" },
   // strength factor of safety of a circular footing uses the axisymmetric solvers
   circleFS: { m: { B: 0.5, D: 0, rough: true, axisym: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, axi: true,
     opts: { strength: { target: Math.PI * 0.25 * 0.25 * 6.05 * 100 / 2, remesh: false } }, ref: 2.0, kind: "fs", note: "circular, undrained, half the capacity (FS 2.0)" },
