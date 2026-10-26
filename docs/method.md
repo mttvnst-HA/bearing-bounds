@@ -52,6 +52,22 @@ j. LP status: a bound is accepted only from a feasible primal point. If the inte
 
 k. Speed: in the browser app, the lower and upper bound of each adaptive cycle are solved at the same time, each in its own child worker with its own WebAssembly copy of HiGHS. This roughly halves a Standard run (5:23 to 3:03 on a test case). If child workers are not available the solves run one after the other, and the solution detail says so. In Node (the tests) they always run one after the other.
 
+## Exact cones and the Clarabel solver
+
+The finite element bounds (plane-strain lower bound, linear and 6-node upper bounds, and both axisymmetric bounds) are first solved with the yield condition stated exactly, as second-order cones (SOC), by Clarabel (an interior-point conic solver from Oxford, compiled to WebAssembly; see vendor/clarabel/README.md for the version and licence). HiGHS with the linearised yield surface is the fallback. The discontinuity layout bound is a linear program (LP) by nature and always uses HiGHS.
+
+a. **Lower bound cones.** Each stress point gets (2c cos φ − (σx + σy) sin φ, σx − σy, 2τ) in the cone; the other strength models are further cones, as in the Lower bound section. No strength factor is needed: the cone is the yield condition itself. In the axisymmetric lower bound, r times (t, x₁, x₂) of each of the three cones is a quadratic in the triangle, and each of its six Bernstein-coefficient triples is put in the cone. The quadratic at any point is a convex combination of those triples (the Bernstein basis is non-negative and sums to one), so it lies in the convex cone everywhere.
+
+b. **Upper bound cones.** By conic duality, for any y = (y₀, y₁, y₂) in the cone with plastic strain rates (εx, εy, γxy) = (y₀ sin φ − y₁, y₀ sin φ + y₁, −2 y₂) (plus the hoop term in the axisymmetric case), the dissipation is at most 2c cos φ · y₀. Each polygon multiplier of the linearised upper bound becomes one such triple, so the flow rule and the dissipation integrals are unchanged in form, and in the axisymmetric upper bound each Bernstein coefficient gets its own triple.
+
+c. **The cone apex.** A traction-free surface point of cohesionless soil with no surcharge can carry no stress at all: the exact cone leaves only its apex. The problem then has no strict interior, and Clarabel stalls there. In cone mode those points are fixed to zero before the solve, and so are the other stress points at the same surface nodes (for example the footing corner, where the optimum is at the apex too). Fixing stresses only restricts the field, so the bound stays rigorous; the cones that become constants are checked and dropped. In the axisymmetric bound the hoop stress at those points is also set to zero (the cones force that too). A zero tension cut-off at a traction-free point leaves its cone only a ray (σ along the surface ≤ 0); that linear condition is solved instead and the cone is still checked.
+
+d. **Admissibility check.** Clarabel's point is accepted only after every constraint of the problem is checked at that point, with the absolute 1e-6 rule that the HiGHS path uses: every equality and inequality row (equilibrium, tractions, boundary and footing conditions, the extension beside and below the mesh, the flow rule and footing interface in the upper bound), every variable bound, and every cone, exactly. The bound is recomputed from that point. To make the check pass at points where the yield condition is active, Clarabel solves with every cone narrowed by a relative 1e-6; the check uses the exact cone. The point is accepted when Clarabel reports "Solved" or "AlmostSolved" and the check passes. Otherwise (any other status, a failed check, or no Clarabel module) the solver runs again with the linearised yield surface and HiGHS, and the solution detail says why.
+
+e. **Numerical settings.** Gap tolerances 1e-7, feasibility tolerance 1e-9, at most 100 iterations. If Clarabel stops with a numerical error or insufficient progress, the solve is repeated once with static regularisation 1e-7 instead of 1e-8; the axisymmetric lower bound needed that.
+
+f. **Effect.** See the timing table in the Verification section. The cone solves take 25 to 40 interior-point iterations whatever the mesh, and the bounds are tighter because nothing is lost to the polygon.
+
 ## Verification (Standard mesh)
 
 Standard mesh: lifted 32-sided yield polygon, 2 adaptive cycles, 6-node finite element upper bound. The "before" columns are the 2026-10-24 values (24-sided polygon, one mesh).

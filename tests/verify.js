@@ -1,6 +1,8 @@
 // Solver verification: runs the engine in Node against known solutions and checks that the
-// bounds bracket them. Usage: node tests/verify.js [--std] [case,case,...]
+// bounds bracket them. Usage: node tests/verify.js [--std] [--no-cone] [case,case,...]
 // Quick mesh by default (a few minutes in total); --std uses the Standard mesh (slower, tighter).
+// The finite element bounds use exact cones and Clarabel, with HiGHS as the fallback; --no-cone uses
+// the linearised yield condition and HiGHS only.
 const path = require("path");
 const FELA = require(path.join(__dirname, "..", "src", "engine.js"));
 
@@ -73,6 +75,7 @@ const AXI = {
   const pick = args.find((a) => !a.startsWith("--"));
   const names = pick ? pick.split(",") : Object.keys(CASES).filter((k) => !CASES[k].only);   // "only" cases run when named
   const highs = await require("highs")();
+  if (!args.includes("--no-cone")) FELA.setConic(require("./clarabel.js")());
   let fails = 0;
   for (const k of names) {
     const c = CASES[k];
@@ -81,10 +84,12 @@ const AXI = {
     const o = Object.assign({}, OPTS[mode], c.axi ? AXI[mode] : {}, c.opts || {});
     if (!o.nu) delete o.nu;
     const ref = c.ref;
-    let lb, ub, extra = [];
+    let lb, ub, extra = [], how = "";
     if (c.run) ({ lb, ub, checks: extra } = await c.run(highs));   // fixed-domain case built directly
     else {
       const r = await FELA.analyse(highs, Object.assign({ gammaW: 9.81, waterDepth: null }, c.m), o);
+      const tag = (x) => (x ? x.solver + (x.fallback ? " (fallback: " + x.fallback + ")" : "") + " " + (x.time || 0).toFixed(1) + " s" : "");
+      how = [r.lb && "LB " + tag(r.lb), r.ub && "FE UB " + tag(r.ub)].filter(Boolean).join(", ");
       lb = c.kind === "fs" ? r.strength.fsLb : c.q === "H" ? r.best.Hlb : r.best.lb; ub = c.kind === "fs" ? r.strength.fsUb : c.q === "H" ? r.best.Hub : r.best.ub;
     }
     const checks = [["LB <= UB", lb <= ub * (1 + 1e-6)]].concat(extra || []);
@@ -93,7 +98,7 @@ const AXI = {
     const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
     if (bad.length) fails++;
     const ratio = (v) => (isFinite(ref) ? (v / ref).toFixed(3) : v.toFixed(1));
-    console.log(`${bad.length ? "FAIL" : "ok  "} ${k.padEnd(7)} LB ${ratio(lb)}  UB ${ratio(ub)}  ${((Date.now() - t) / 1000).toFixed(0)} s  (${c.note})${bad.length ? "  failed: " + bad.join(", ") : ""}`);
+    console.log(`${bad.length ? "FAIL" : "ok  "} ${k.padEnd(7)} LB ${ratio(lb)}  UB ${ratio(ub)}  ${((Date.now() - t) / 1000).toFixed(0)} s  (${c.note})${bad.length ? "  failed: " + bad.join(", ") : ""}${how ? "\n       " + how : ""}`);
   }
   console.log(fails ? `${fails} case(s) failed` : "All cases passed");
   process.exit(fails ? 1 : 0);

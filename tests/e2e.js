@@ -33,6 +33,8 @@ const check = (name, ok, extra) => { if (!ok) fails++; console.log(`${ok ? "ok  
   const lb = parseFloat((await txt("fLB")).replace(/,/g, "")), ub = parseFloat((await txt("fUB")).replace(/,/g, ""));
   check("lower bound below upper bound", lb > 0 && lb <= ub, lb + " / " + ub);
   check("answer line shows the FS", /Factor of safety/.test(await txt("answer")));
+  const lbSolver = await p.$eval("#detail", (t) => { const r = [...t.rows].find((x) => /Lower-bound solver/.test(x.cells[0].textContent)); return r ? r.cells[1].textContent : ""; });
+  check("lower bound solved with exact cones (Clarabel)", /^Clarabel/.test(lbSolver), lbSolver);
   check("animation tab opens after a run", (await p.$eval("[role=tab][aria-selected=true]", (e) => e.id)) === "tab-anim");
 
   // load-size change keeps results; geometry change makes them stale

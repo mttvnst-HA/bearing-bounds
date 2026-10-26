@@ -310,11 +310,11 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
         <summary><h3>Method, limits and verification</h3></summary>
         <div class="inner">
         <ol class="notes">
-          <li><b>Lower bound (LB)</b>: finite element limit analysis (FELA) with linear stress triangles and statically admissible stress discontinuities on every edge, an inscribed linearised yield surface, and a radial fan of elements at the footing edge. Quick uses an 18-sided polygon; Standard and Fine use a 32- or 64-sided lifted polygon (Ben-Tal and Nemirovski) at about the same cost. The stress field is extended to the infinite half-space beside and below the mesh (zero shear, geostatic vertical stress beside it, uniform horizontal stress below it, with yield checked in every deeper layer), so the result is a rigorous lower bound whatever the mesh size.</li>
+          <li><b>Lower bound (LB)</b>: finite element limit analysis (FELA) with linear stress triangles and statically admissible stress discontinuities on every edge, the exact Mohr-Coulomb yield condition, and a radial fan of elements at the footing edge. If the exact solve is not accepted, an inscribed linearised yield surface is used instead: an 18-sided polygon on Quick, a 32- or 64-sided lifted polygon (Ben-Tal and Nemirovski) on Standard and Fine. The stress field is extended to the infinite half-space beside and below the mesh (zero shear, geostatic vertical stress beside it, uniform horizontal stress below it, with yield checked in every deeper layer), so the result is a rigorous lower bound whatever the mesh size.</li>
           <li><b>Adaptive mesh</b>: Standard and Fine solve on 2 or 3 meshes, each refined where the previous solution was plastic (the lower bound's plastic multipliers and the finite element upper bound's plastic strain), after OptumG2. The best bound of each kind is kept.</li>
           <li><b>Upper bound (UB)</b>: discontinuity layout optimisation (DLO), which finds the critical translational mechanism among every line joining a grid of nodes, on a domain grown until the mechanism is clear of its edges. A finite element UB also runs for layered profiles, slopes, combined loads and (Standard, Fine) frictional soil, or when you tick the option: 6-node quadratic velocity triangles on Standard and Fine, linear triangles with velocity discontinuities on Quick. The lowest valid UB is reported.</li>
           <li><b>Circular footings</b> under a central vertical load on level ground are analysed as axisymmetric, with full three-dimensional Mohr-Coulomb (the hoop stress is a principal stress): quadratic r-weighted stresses for the LB, quadratic velocities with velocity jumps for the UB. These are rigorous bounds for the circle. Untick the option, or apply H, e or a slope, to use the plane-strain estimate with shape factors instead.</li>
-          <li>Both bounds come from linear programs (LP) solved in your browser with the HiGHS interior-point solver, in a background worker. A bound is accepted only from a feasible primal point.</li>
+          <li>The finite element bounds are solved first with the yield condition stated exactly, as second-order cones (SOC), by the Clarabel interior-point solver; its stress or velocity field is then checked against every equilibrium, boundary and exact Mohr-Coulomb condition before the bound is accepted. If that solve or check fails, the linearised problem (a linear program, LP) is solved with HiGHS instead. The discontinuity layout bound is always an LP solved with HiGHS. Everything runs in your browser in background workers, and a bound is accepted only from a feasible point. The solution detail says which solver produced each bound.</li>
           <li>The mesh follows every layer boundary, the water table and the slope, so no element straddles two materials.</li>
           <li>The analysis is in effective stress throughout, using buoyant unit weight below the water table for every layer. For undrained (φ = 0) layers this changes nothing but a uniform shift by the pore pressure. Reported pressures are gross total pressures at the footing base: the effective result plus the pore pressure there, so they compare directly with the applied load.</li>
           <li><b>Footing and loads</b>: the footing is a rigid body that can settle, slide, rotate and lift off, on a no-tension interface that is smooth, or rough with an interface factor R (tan δ = R tan φ′, adhesion = R c′ or R sᵤ). Loads are increased in one of three ways: all together (V, H and M = V·e in proportion; FS on the whole load); V increased with H held (FS on V); or V held with H increased (sliding capacity, FS on H). When the load is vertical and central on level ground, a symmetric half section is solved.</li>
@@ -351,8 +351,10 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
 </div>
 
 <script id="src-highs" type="text/plain">/*__HIGHS__*/</script>
+<script id="src-clarabel" type="text/plain">/*__CLARABEL__*/</script>
 <script id="src-engine">/*__ENGINE__*/</script>
 <script id="wasm" type="application/octet-stream">__WASM_B64__</script>
+<script id="wasm-clarabel" type="application/octet-stream">__CLARABEL_B64__</script>
 <script>
 (function () {
   "use strict";
@@ -746,23 +748,25 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     // (the child script is a Blob URL made here: a page opened from a file has origin "null", and a worker
     // cannot start a child from the page's own Blob URL then)
     let childUrl = null;
-    function solveInChild(job, bytes, src) {
+    function solveInChild(job, bytes, cbytes, src) {
       return new Promise((resolve, reject) => {
         if (!childUrl) childUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
         const w = new Worker(childUrl);
         w.onmessage = (ev) => { w.terminate(); if (ev.data.type === "job-done") resolve(ev.data.r); else reject(new Error(ev.data.message)); };
         w.onerror = (e) => { w.terminate(); if (e && e.preventDefault) e.preventDefault(); reject(new Error((e && e.message) || "child worker failed")); };
-        const b = bytes.slice();
-        w.postMessage({ job: job, bytes: b }, [b.buffer]);
+        const b = bytes.slice(), cb = cbytes ? cbytes.slice() : null;
+        w.postMessage({ job: job, bytes: b, cbytes: cb }, cb ? [b.buffer, cb.buffer] : [b.buffer]);
       });
     }
     self.onmessage = async (ev) => {
       const d = ev.data;
       try {
         const highs = await Module({ instantiateWasm: (imports, done) => { WebAssembly.instantiate(d.bytes, imports).then((r) => done(r.instance)); return {}; } });
+        // Clarabel for the exact-cone finite element solves; without it they use HiGHS alone
+        if (d.cbytes) { try { wasm_bindgen.initSync({ module: d.cbytes }); FELA.setConic(wasm_bindgen); } catch (e) { FELA.setConic(null); } }
         if (d.job) { self.postMessage({ type: "job-done", r: FELA.runJob(highs, d.job) }); return; }
         const opts = Object.assign({}, d.opts, { onProgress: (t, f) => self.postMessage({ type: "progress", t: t, f: f }) });
-        if (typeof Worker !== "undefined" && d.src) opts.parallel = (jobs) => Promise.all(jobs.map((j) => solveInChild(j, d.bytes, d.src)));
+        if (typeof Worker !== "undefined" && d.src) opts.parallel = (jobs) => Promise.all(jobs.map((j) => solveInChild(j, d.bytes, d.cbytes, d.src)));
         const r = await FELA.analyse(highs, d.model, opts);
         r.velGrid = velocityGrid(r);
         delete r.model.geo;
@@ -773,10 +777,10 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       }
     };
   `;
-  let workerUrl = null, workerSrc = "", worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
+  let workerUrl = null, workerSrc = "", worker = null, wasmBytes = null, coneBytes = null, timer = null, t0 = 0, stepText = "";
   function makeWorker() {
     if (!workerUrl) {
-      workerSrc = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
+      workerSrc = $("src-highs").textContent + "\n;\n" + $("src-clarabel").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
       workerUrl = URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
     }
     return new Worker(workerUrl);
@@ -861,8 +865,8 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       setRunning(false); $("bar").style.width = "0%";
       setStatus("The solver ran out of memory or crashed" + (e && e.message ? " (" + e.message + ")" : "") + ". Use the Quick or Standard mesh.", true);
     };
-    const bytes = wasmBytes.slice();
-    worker.postMessage({ bytes: bytes, model: m, opts: opts, src: workerSrc }, [bytes.buffer]);
+    const bytes = wasmBytes.slice(), cbytes = coneBytes ? coneBytes.slice() : null;
+    worker.postMessage({ bytes: bytes, cbytes: cbytes, model: m, opts: opts, src: workerSrc }, cbytes ? [bytes.buffer, cbytes.buffer] : [bytes.buffer]);
   }
   const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   $("form").addEventListener("submit", run);
@@ -952,6 +956,12 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     if (Math.abs(m.w) * result.inputs.B / 2 > 0.05) parts.push("rotates " + (m.w < 0 ? "clockwise" : "anticlockwise"));
     return parts.length ? parts.join(", ") : "settles";
   }
+  // which solver produced a finite element bound
+  function solverText(x) {
+    if (!x) return "–";
+    if (x.solver === "Clarabel") return "Clarabel, exact Mohr-Coulomb cones (" + fmt(x.iterations) + " iterations, checked)";
+    return "HiGHS, linearised yield surface" + (x.fallback ? " (the exact-cone solve was not used: " + x.fallback + ")" : "");
+  }
   function renderDetail(b) {
     const r = result, I = b.I, u = unit("stress"), strip = I.ftype === "strip";
     const gap = (b.ub - b.lb) / (0.5 * (b.ub + b.lb)) * 100;
@@ -970,9 +980,10 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       ["Lower-bound mesh", fmt(r.mesh.nE) + " triangles" + (r.cycles && r.cycles.length > 1 ? ", after " + r.cycles.length + " adaptive cycles (" + r.cycles.map((c) => fmt(c.nE)).join(" → ") + ")" : "")],
       ["Upper-bound layout", fmt(r.dlo.nodes.length) + " nodes, " + fmt(r.dlo.nLines) + " lines"],
       ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s" + (r.parallelUsed && !r.parallelFailed ? "; finite element bounds solved in parallel" : r.parallelFailed ? "; solved one after the other (parallel workers unavailable: " + r.parallelFailed + ")" : "")],
-      ["Discontinuity layout UB", r.axisym ? "plane-strain mechanism, used only to size the model" : fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)")]
+      ["Lower-bound solver", solverText(r.lb)],
+      ["Discontinuity layout UB", r.axisym ? "plane-strain mechanism, used only to size the model" : fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)") + ", solved with HiGHS"]
     ];
-    if (r.ub) rows.push(["Finite element UB", (r.axisym ? fmtP(r.ub.qu) : fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B)) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" && !r.axisym ? ", run for the " + r.feReason : "")]);
+    if (r.ub) rows.push(["Finite element UB", (r.axisym ? fmtP(r.ub.qu) : fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B)) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" && !r.axisym ? ", run for the " + r.feReason : "")], ["Finite element UB solver", solverText(r.ub)]);
     if (r.strength) rows.push(["Factor of safety on strength", fmt(r.strength.fsLb, 3) + " to " + (isFinite(r.strength.fsUb) ? fmt(r.strength.fsUb, 3) : "–") + " (" + r.strength.evals.length + " extra solves)"]);
     if (I.rough && num(I.rI) != null && I.rI < 1) rows.push(["Base interface factor R", fmt(I.rI, 2)]);
     rows.push(["Analysed domain" + (r.axisym ? " (radius × depth)" : r.sym ? " (half section)" : ""), fmtLen(r.model.xR - r.model.xL) + " × " + fmtLen(r.model.H) + " " + unit("len")]);
@@ -1528,10 +1539,9 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   renderForm(); buildTabs(); renderResults(); drawCurrent();
   (async () => {
     try {
-      const b64 = $("wasm").textContent.trim(), bin = atob(b64), bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      wasmBytes = bytes;
-      $("wasm").textContent = "";
+      const decode = (id) => { const bin = atob($(id).textContent.trim()), bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); $(id).textContent = ""; return bytes; };
+      wasmBytes = decode("wasm");
+      try { coneBytes = decode("wasm-clarabel"); } catch (e) { coneBytes = null; }   // optional: HiGHS alone without it
       setStatus("Ready. The example is loaded; press Run limit analysis.");
     } catch (e) {
       console.error(e);

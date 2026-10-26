@@ -479,7 +479,20 @@
   }
 
   /* ================= LP ================= */
-  function LP() { this.nc = 0; this.cost = []; this.lo = []; this.up = []; this.ri = []; this.rv = []; this.rs = [0]; this.rlo = []; this.rup = []; }
+  function LP() { this.nc = 0; this.cost = []; this.lo = []; this.up = []; this.ri = []; this.rv = []; this.rs = [0]; this.rlo = []; this.rup = []; this.soc = []; }
+  // second-order cone: f0 >= ||(f1, f2)|| for affine forms f = [idx, val, constant] (cone mode only). A
+  // check-only cone is not sent to the solver (an equivalent linear row is) but is checked like the others.
+  LP.prototype.addSOC = function (forms, checkOnly) {
+    this.soc.push(forms.map(([idx, val, c0]) => {
+      const m = new Map();
+      for (let i = 0; i < idx.length; i++) if (val[i] !== 0) m.set(idx[i], (m.get(idx[i]) || 0) + val[i]);
+      const I = [], V = [];
+      m.forEach((v, k) => { if (Math.abs(v) > 1e-14) { I.push(k); V.push(v); } });
+      return { idx: I, val: V, c: c0 || 0 };
+    }));
+    if (checkOnly) (this.socCheckOnly || (this.socCheckOnly = new Set())).add(this.soc.length - 1);
+    return this.soc.length - 1;
+  };
   LP.prototype.addVar = function (lo, up, cost) { this.lo.push(lo); this.up.push(up); this.cost.push(cost || 0); return this.nc++; };
   LP.prototype.addRow = function (idx, val, lo, up) {
     const m = new Map();
@@ -534,6 +547,146 @@
     return { status: r.status, optimal: r.status === 7, valid: good(r), crossover: crossover, pinf: r.pinf, obj: r.obj, x: good(r) ? r.x : null, y: good(r) ? r.y : null, nVars: data.numCols, nRows: data.numRows };
   }
   function statusText(s) { return { 7: "optimal", 8: "infeasible", 9: "unbounded or infeasible", 10: "unbounded", 13: "time limit", 14: "iteration limit", 15: "not proven optimal" }[s] || "status " + s; }
+
+  /* ================= exact second-order cones: Clarabel ================= */
+  // In cone mode the finite element solvers state the Mohr-Coulomb condition exactly as second-order cones
+  // (lp.soc) and the problem goes to the Clarabel interior-point solver (WebAssembly, registered with
+  // setConic). Clarabel's point is accepted only after a check of every constraint of the problem at that
+  // point, with the 1e-6 absolute rule of runLP: equality and inequality rows, variable bounds and every
+  // cone. The objective is recomputed from the point, so the bound is that of a field that passed the check.
+  // Anything else falls back to the linearised problem and HiGHS (conicFirst).
+  let CONIC = null;
+  function setConic(c) { CONIC = c || null; }
+  const CLARABEL_STATUS = ["unsolved", "solved", "primal infeasible", "dual infeasible", "almost solved", "almost primal infeasible",
+    "almost dual infeasible", "iteration limit", "time limit", "numerical error", "insufficient progress", "stopped"];
+  const FEAS_TOL = 1e-6;
+  function runConic(lp, sense, opts) {
+    const n0 = lp.nc, R = lp.rlo.length, INF = Infinity;
+    const fail = (why, extra) => Object.assign({ status: -1, optimal: false, valid: false, obj: NaN, x: null, y: null, nVars: n0, nRows: R, nCones: lp.soc.length, solver: "Clarabel", reason: why }, extra || {});
+    // eliminate fixed variables (lo = up), which also turns the cones at fixed stress points into constants
+    const fixed = new Float64Array(n0), isFix = new Uint8Array(n0), col = new Int32Array(n0);
+    let n = 0;
+    for (let j = 0; j < n0; j++) {
+      if (lp.lo[j] === lp.up[j]) { isFix[j] = 1; fixed[j] = lp.lo[j]; col[j] = -1; } else col[j] = n++;
+    }
+    // constraint rows of Clarabel's A x + s = b: zero cone, then non-negative cone, then the second-order cones
+    const zr = [], nr = [];   // [kind (0 row, 1 variable), index, sign, rhs]
+    for (let r = 0; r < R; r++) {
+      let fc = 0, live = 0;
+      for (let k = lp.rs[r]; k < lp.rs[r + 1]; k++) { const j = lp.ri[k]; if (isFix[j]) fc += lp.rv[k] * fixed[j]; else live++; }
+      const lo = lp.rlo[r] - fc, up = lp.rup[r] - fc;
+      if (!live) { if (lo > FEAS_TOL || up < -FEAS_TOL) return fail("a constraint on fixed values only is violated"); continue; }
+      if (lp.rlo[r] === lp.rup[r]) zr.push([0, r, 1, up]);
+      else { if (up < INF) nr.push([0, r, 1, up]); if (lo > -INF) nr.push([0, r, -1, -lo]); }
+    }
+    for (let j = 0; j < n0; j++) {
+      if (isFix[j]) continue;
+      if (lp.up[j] < INF) nr.push([1, j, 1, lp.up[j]]);
+      if (lp.lo[j] > -INF) nr.push([1, j, -1, -lp.lo[j]]);
+    }
+    const socKeep = [];
+    let constBad = false;
+    lp.soc.forEach((F, s) => {
+      if (lp.socCheckOnly && lp.socCheckOnly.has(s)) return;
+      const f = F.map((fm) => { let c = fm.c, live = 0; fm.idx.forEach((j, k) => { if (isFix[j]) c += fm.val[k] * fixed[j]; else live++; }); return { c: c, live: live }; });
+      // a cone on fixed values only (the apex at a fixed zero stress point, say) is checked and dropped
+      if (f.every((q) => !q.live)) { if (Math.hypot(f[1].c, f[2].c) - f[0].c > FEAS_TOL) constBad = true; return; }
+      socKeep.push(s);
+    });
+    if (constBad) return fail("a cone on fixed values only is violated");
+    const m = zr.length + nr.length + 3 * socKeep.length;
+    // Clarabel solves with every cone narrowed by a relative 1e-6 (f0 (1 - 1e-6) >= ||(f1, f2)||), so that its
+    // point, which is only feasible to within its tolerance, lies inside the exact cone that is checked below
+    const shrink = 1 - (opts.coneShrink == null ? 1e-6 : opts.coneShrink);
+    // A in compressed sparse column form (rows emitted in order, so each column's rows are sorted)
+    const cnt = new Int32Array(n + 1);
+    const each = (fn) => {
+      let i = 0;
+      const rowOf = (q) => {
+        if (q[0] === 0) { for (let k = lp.rs[q[1]]; k < lp.rs[q[1] + 1]; k++) { const j = lp.ri[k]; if (!isFix[j]) fn(i, col[j], q[2] * lp.rv[k]); } }
+        else fn(i, col[q[1]], q[2]);
+        i++;
+      };
+      zr.forEach(rowOf); nr.forEach(rowOf);
+      socKeep.forEach((s) => lp.soc[s].forEach((fm, u) => { const f = u ? 1 : shrink; fm.idx.forEach((j, k) => { if (!isFix[j]) fn(i, col[j], -f * fm.val[k]); }); i++; }));
+    };
+    each((i, j) => cnt[j + 1]++);
+    for (let j = 0; j < n; j++) cnt[j + 1] += cnt[j];
+    const nnz = cnt[n], rowIdx = new Uint32Array(nnz), aVal = new Float64Array(nnz), pos = cnt.slice(0, n);
+    each((i, j, v) => { rowIdx[pos[j]] = i; aVal[pos[j]++] = v; });
+    const b = new Float64Array(m);
+    let i0 = 0;
+    zr.forEach((q) => (b[i0++] = q[3])); nr.forEach((q) => (b[i0++] = q[3]));
+    socKeep.forEach((s) => lp.soc[s].forEach((fm, u) => { let c = fm.c; fm.idx.forEach((j, k) => { if (isFix[j]) c += fm.val[k] * fixed[j]; }); b[i0++] = (u ? 1 : shrink) * c; }));
+    const q = new Float64Array(n), sg = sense === "max" ? -1 : 1;
+    for (let j = 0; j < n0; j++) if (!isFix[j]) q[col[j]] = sg * lp.cost[j];
+    const tol = opts.coneTol || 1e-7;
+    // settings: max_iter, time_limit, tol_gap_abs, tol_gap_rel, tol_feas, tol_ktratio, verbose, equilibrate, presolve,
+    // static regularisation (see wasm/clarabel/src/lib.rs). The default regularisation is tried first; a numerical
+    // failure near the optimum (seen on the axisymmetric lower bound) is retried with a larger one.
+    const colPtr = Uint32Array.from(cnt), socDims = Uint32Array.from(socKeep, () => 3);
+    let out, status = -1, iters = 0;
+    for (const reg of [1e-8, 1e-7]) {
+      const settings = Float64Array.from([opts.coneMaxIter || 100, opts.timeLimit || 600, tol, tol, opts.coneFeasTol || 1e-9, 1e-7, globalThis.__LPLOG ? 1 : 0, 1, 1, reg]);
+      try { out = CONIC.solve(n, m, q, colPtr, rowIdx, aVal, b, zr.length, nr.length, socDims, settings); }
+      catch (e) { return fail("Clarabel failed: " + (e && e.message ? e.message : e)); }
+      if (!out || out.length < 5) return fail("Clarabel rejected the problem data");
+      status = out[0]; iters += out[1];
+      if (status !== 9 && status !== 10) break;   // retry only after a numerical error or insufficient progress
+    }
+    const info = { coneStatus: CLARABEL_STATUS[status] || "status " + status, iterations: iters, nCones: lp.soc.length };
+    if (status !== 1 && status !== 4) return fail("Clarabel stopped: " + info.coneStatus, info);
+    // the point in the original variables
+    const x = new Float64Array(n0);
+    for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : Math.min(lp.up[j], Math.max(lp.lo[j], out[5 + col[j]]));
+    // dual of the first component of every cone (a plastic multiplier; 0 for dropped cones)
+    const zs = new Float64Array(lp.soc.length), zBase = 5 + n + zr.length + nr.length;
+    socKeep.forEach((s, k) => (zs[s] = out[zBase + 3 * k]));
+    // check every constraint at x
+    let rowViol = 0, coneViol = 0;
+    for (let r = 0; r < R; r++) {
+      let ax = 0; for (let k = lp.rs[r]; k < lp.rs[r + 1]; k++) ax += lp.rv[k] * x[lp.ri[k]];
+      rowViol = Math.max(rowViol, lp.rlo[r] - ax, ax - lp.rup[r]);
+    }
+    const val = (fm) => { let v = fm.c; for (let k = 0; k < fm.idx.length; k++) v += fm.val[k] * x[fm.idx[k]]; return v; };
+    lp.soc.forEach((F) => { coneViol = Math.max(coneViol, Math.hypot(val(F[1]), val(F[2])) - val(F[0])); });
+    let obj = 0; for (let j = 0; j < n0; j++) obj += lp.cost[j] * x[j];
+    Object.assign(info, { rowViol: rowViol, coneViol: coneViol });
+    if (!(rowViol <= FEAS_TOL && coneViol <= FEAS_TOL)) return fail("the solution failed the admissibility check (rows " + rowViol.toExponential(1) + ", cones " + coneViol.toExponential(1) + ")", info);
+    return Object.assign({ status: 7, optimal: status === 1, valid: true, crossover: false, pinf: Math.max(0, rowViol, coneViol), obj: obj, x: x, y: null, zs: zs, nVars: n0, nRows: R, solver: "Clarabel" }, info);
+  }
+  // solve with the solver the problem was built for
+  function solveLP(highs, lp, sense, opts) {
+    if (opts._soc) return runConic(lp, sense, opts);
+    const r = runLP(highs, lp, sense, opts); r.solver = "HiGHS"; return r;
+  }
+  // which solver produced a result, and how well its point satisfied the constraints
+  function solverInfo(out, r) {
+    out.solver = r.solver;
+    ["nCones", "iterations", "coneStatus", "rowViol", "coneViol", "reason", "pinf"].forEach((k) => { if (r[k] != null) out[k] = r[k]; });
+    return out;
+  }
+  // Run a finite element solver with exact cones and Clarabel when it is available; if that gives no
+  // checked bound, run it again linearised with HiGHS. The result says which solver produced it.
+  function conicFirst(fn) {
+    return function (highs, model, mesh, mats, opts) {
+      if (opts._soc != null) return fn(highs, model, mesh, mats, opts);
+      if (CONIC && opts.cone !== false) {
+        const t = Date.now();
+        let r = null, why = "";
+        try { r = fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: true })); } catch (e) { why = "Clarabel failed: " + (e && e.message ? e.message : e); }
+        if (r && r.valid) return r;
+        if (r === null && !why) return null;
+        const r2 = fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: false }));
+        if (r2) {
+          r2.fallback = why || (r && r.reason ? r.reason + (r.coneStatus && !/stopped/.test(r.reason) ? " after " + r.iterations + " iterations, " + r.coneStatus : "") : "no valid cone solution");
+          r2.coneTime = (Date.now() - t) / 1000;
+        }
+        return r2;
+      }
+      return fn(highs, model, mesh, mats, Object.assign({}, opts, { _soc: false }));
+    };
+  }
 
   // footing load geometry shared by the solvers
   // Loads on the whole footing are F = Ffix + alpha Fref with F = (V, H, M): V down, H along +x, M = V e
@@ -620,9 +773,19 @@
   }
   // lower bound: inscribed yield conditions at one stress point (variables ix, iy, it); returns the factor on
   // the cone radius that the linearisation guarantees
-  function addYieldLB(lp, ix, iy, it, cones, opts) {
+  // (free: the point is on a traction-free surface, cone mode only)
+  function addYieldLB(lp, ix, iy, it, cones, opts, free) {
     let cp = 1;
     cones.forEach((cn) => {
+      if (opts._soc) {   // exact: (ct - st (sx + sy), k1 (sx - sy) + c1, 2 tau) in the second-order cone
+        const forms = [[[ix, iy], [-cn.st, -cn.st], cn.ct], [[ix, iy], [cn.k1, -cn.k1], cn.c1], [[it], [2], 0]];
+        // A zero tension cut-off at a traction-free point (stress sigma_t along the surface only) leaves the
+        // cone no interior: there it is exactly sigma_t = sx + sy <= 0, which is solved instead (and the
+        // cone still checked)
+        if (free && cn.ct === 0 && cn.c1 === 0 && cn.st === 1 && cn.k1 === 1) { lp.addRow([ix, iy], [1, 1], -Infinity, 0); lp.addSOC(forms, true); return; }
+        lp.addSOC(forms);
+        return;
+      }
       if (!opts.nu) {
         const pg = polygon(opts.p); cp = pg.cp;
         for (let k = 0; k < pg.p; k++) lp.addRow([ix, iy, it], [pg.co[k] * cn.k1 + pg.cp * cn.st, -pg.co[k] * cn.k1 + pg.cp * cn.st, 2 * pg.si[k]], -Infinity, pg.cp * cn.ct - pg.co[k] * cn.c1);
@@ -656,6 +819,17 @@
   function addFlowUB(lp, eps, cones, area, opts) {
     const nc = eps.length, vars = [], rowsS = [[], [], [], []], lam = [];
     cones.forEach((cn) => {
+      if (opts._soc) {
+        // exact: by conic duality, for any y = (y0, y1, y2) in the second-order cone with
+        // eps = (st y0 - k1 y1, st y0 + k1 y1, -2 y2, sth y0), the dissipation is at most ct y0 + c1 y1
+        const y = [0, 1, 2].map(() => lp.addVar(-Infinity, Infinity, 0));
+        lp.cost[y[0]] = cn.ct * area; lp.cost[y[1]] = cn.c1 * area;
+        rowsS[0].push([y[0], cn.st], [y[1], -cn.k1]); rowsS[1].push([y[0], cn.st], [y[1], cn.k1]); rowsS[2].push([y[2], -2]);
+        if (nc === 4) rowsS[3].push([y[0], cn.sth || 0]);
+        lp.addSOC(y.map((v) => [[v], [1], 0]));
+        vars.push(...y); lam.push([y[0], 2]);
+        return;
+      }
       if (!opts.nu) {
         const pg = polygon(opts.p);
         for (let k = 0; k < pg.p; k++) {
@@ -727,6 +901,7 @@
     // The objective is the load multiplier alpha: V' + uFoot = w (Vfix + alpha Vref), and likewise for H and M.
     const Av = lp.addVar(-Infinity, Infinity, 1), itf = interfaceOf(model);
     const vI = [Av], vC = [-fr.w * fr.ref[0]], hI = [], hC = [], mI = [], mC = [];
+    const tipAt = new Set(), freePt = new Set();   // traction-free surface nodes and stress points (cone mode)
     mesh.bnd.forEach((bd) => {
       const L = Math.hypot(bd.Q[0] - bd.P[0], bd.Q[1] - bd.P[1]);
       const ends = [[bd.i, bd.P], [bd.j, bd.Q]];
@@ -736,6 +911,7 @@
           const q = g.qs(X[0]);
           lp.addRow([sv(bd.e, i, 0), sv(bd.e, i, 1), sv(bd.e, i, 2)], [nx * nx, ny * ny, 2 * nx * ny], -q, -q);
           lp.addRow([sv(bd.e, i, 0), sv(bd.e, i, 1), sv(bd.e, i, 2)], [-nx * ny, nx * ny, nx * nx - ny * ny], 0, 0);
+          if (opts._soc && Math.abs(q) < 1e-12) { tipAt.add(key(X[0]) + ":" + key(X[1])); freePt.add(sv(bd.e, i, 0)); }
         });
       } else if (bd.type === "footing") {
         const x1 = bd.P[0], x2 = bd.Q[0];
@@ -800,19 +976,36 @@
         });
       });
     }
-    const yRow = new Int32Array(nE * 3 + 1);
+    // A traction-free point of cohesionless soil can only carry zero stress (the apex of its cone), and at
+    // the optimum the points that meet it at the same node (the footing corner, say) are at or near the apex
+    // too. The exact cone has no interior there, which stalls an interior-point solver, so every stress
+    // point at such a node is fixed to zero. Fixing stresses only restricts the field, so the bound stays
+    // rigorous.
+    if (tipAt.size) {
+      for (let e = 0; e < nE; e++) {
+        const X = mesh.XY[e];
+        for (let i = 0; i < 3; i++) {
+          if (!tipAt.has(key(X[2 * i]) + ":" + key(X[2 * i + 1]))) continue;
+          if (!conesAt(model, mats[e].layer, X[2 * i + 1]).some((cn) => cn.ct === 0 && cn.c1 === 0 && cn.st < 1)) continue;
+          for (let k = 0; k < 3; k++) { lp.lo[sv(e, i, k)] = 0; lp.up[sv(e, i, k)] = 0; }
+        }
+      }
+    }
+    // yield rows (linearised) or cones (exact) of each stress point, for the refinement indicator
+    const yRow = new Int32Array(nE * 3 + 1), ySoc = new Int32Array(nE * 3 + 1);
     let cpY = 1;
     for (let e = 0; e < nE; e++) {
       const X = mesh.XY[e];
       for (let i = 0; i < 3; i++) {
-        yRow[e * 3 + i] = lp.rlo.length;
-        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), conesAt(model, mats[e].layer, X[2 * i + 1]), opts);
+        yRow[e * 3 + i] = lp.rlo.length; ySoc[e * 3 + i] = lp.soc.length;
+        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), conesAt(model, mats[e].layer, X[2 * i + 1]), opts, freePt.has(sv(e, i, 0)));
       }
     }
-    yRow[nE * 3] = lp.rlo.length;
-    const r = runLP(highs, lp, "max", opts);
+    yRow[nE * 3] = lp.rlo.length; ySoc[nE * 3] = lp.soc.length;
+    const r = solveLP(highs, lp, "max", opts);
     const V = fr.w * (fr.fix[0] + r.obj * fr.ref[0]);
     const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: V, qu: V / fr.width };
+    solverInfo(out, r);
     if (r.status === 8 || r.status === 9) out.infeasible = true;
     if (r.x) {
       const util = new Float64Array(nE * 3), sig = new Float64Array(nE * 9), ind = new Float64Array(nE);
@@ -824,8 +1017,9 @@
         util[e * 3 + i] = R > 1e-12 ? Math.min(1, q / (R * cpY)) : 1;
         // shear dissipation indicator: plastic multipliers (row duals) times the deviatoric stress
         if (r.y) { let lam = 0; for (let k = yRow[e * 3 + i]; k < yRow[e * 3 + i + 1]; k++) lam += Math.abs(r.y[k]); ind[e] += lam * q; }
+        else if (r.zs) { let lam = 0; for (let k = ySoc[e * 3 + i]; k < ySoc[e * 3 + i + 1]; k++) lam += Math.abs(r.zs[k]); ind[e] += lam * q; }
       }
-      out.util = util; out.sig = sig; if (r.y) out.ind = ind;
+      out.util = util; out.sig = sig; if (r.y || r.zs) out.ind = ind;
     }
     return out;
   }
@@ -909,9 +1103,9 @@
         [bd.i, bd.j].forEach((i) => { fixV(uv(bd.e, i, 0), 0); fixV(uv(bd.e, i, 1), 0); });
       }
     });
-    const r = runLP(highs, lp, "min", opts);
+    const r = solveLP(highs, lp, "min", opts);
     const V = fr.w * fr.fix[0] + r.obj * fr.ref[0];
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width };
+    const out = solverInfo({ status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width }, r);
     if (r.x) {
       const vel = new Float64Array(nE * 6);
       for (let k = 0; k < nE * 6; k++) vel[k] = r.x[k];
@@ -1065,15 +1259,67 @@
     }
     const Vrhs = -Math.PI * b * b * (q0 + u);
     lp.addRow(vI, vC, Vrhs, Vrhs);
+    // Exact cones: points of a traction-free surface edge of cohesionless soil with no surcharge carry zero
+    // stress (the apex of every cone, so no interior there): fix them, with a zero hoop stress, and leave out
+    // the cones of the Bernstein coefficients that then vanish. Vertices of other triangles at those surface
+    // nodes (the footing corner) are fixed too, as in plane strain; that only restricts the field.
+    const tipPt = new Map();   // element -> six flags
+    if (opts._soc && Math.abs(q0) < 1e-12) {
+      const fix = (e, n) => {
+        const fl = tipPt.get(e) || [0, 0, 0, 0, 0, 0];
+        if (fl[n]) return;
+        fl[n] = 1; tipPt.set(e, fl);
+        for (let k = 0; k < 3; k++) { lp.lo[sv(e, n, k)] = 0; lp.up[sv(e, n, k)] = 0; }
+        if (ptXY(e, n)[0] > tolR) { const [hi, hv] = hoop(e, QPTS[n]); lp.addRow(hi, hv, 0, 0); }
+      };
+      const nodes = new Set(), cohesionless = (e, n) => axiConesAt(model, mats[e].layer, ptXY(e, n)[1])[0].ct === 0;
+      mesh.bnd.forEach((bd) => {
+        if (bd.type !== "surface") return;
+        const pts = [bd.i, midOf(bd), bd.j];
+        if (!pts.every((n) => cohesionless(bd.e, n))) return;
+        pts.forEach((n) => fix(bd.e, n));
+        [bd.P, bd.Q].forEach((X) => nodes.add(key(X[0]) + ":" + key(X[1])));
+      });
+      if (nodes.size) for (let e = 0; e < nE; e++) for (let n = 0; n < 3; n++) {
+        const X = ptXY(e, n);
+        if (nodes.has(key(X[0]) + ":" + key(X[1])) && cohesionless(e, n)) fix(e, n);
+      }
+    }
     // yield: Bernstein coefficients of r * (row) <= 0 in each triangle
-    const yRow = new Int32Array(nE + 1);
+    const yRow = new Int32Array(nE + 1), ySoc = new Int32Array(nE + 1);
     let cpY = 1;
     for (let e = 0; e < nE; e++) {
-      yRow[e] = lp.rlo.length;
+      yRow[e] = lp.rlo.length; ySoc[e] = lp.soc.length;
       const layer = mats[e].layer, xy = [0, 1, 2, 3, 4, 5].map((n) => ptXY(e, n));
       const rP = xy.map((p2) => Math.max(0, p2[0])), gP = xy.map((p2) => sigGeo(model, p2[1]));
       const conesP = xy.map((p2) => axiConesAt(model, layer, p2[1]));
       const hoopP = QPTS.map((L) => hoop(e, L));
+      if (opts._soc) {
+        // r times (t, x1, x2) of each cone is quadratic in the triangle; each of its six Bernstein coefficient
+        // triples in the cone puts every point in it (a convex combination of cone points, r >= 0)
+        const tip = tipPt.get(e) || [0, 0, 0, 0, 0, 0];
+        const coefTip = [tip[0], tip[1], tip[2]].concat(QEDG.map(([i, j], k) => tip[i] && tip[j] && tip[3 + k]));
+        for (let ci = 0; ci < conesP[0].length; ci++) {
+          const cn0 = conesP[0][ci];
+          const comp = (which) => [0, 1, 2, 3, 4, 5].map((n) => {
+            const cn = conesP[n][ci], idx = [], val = [];
+            if (which === 0) {          // r t = r ct - st (S_r + S_z + r g) - sth r s_theta
+              idx.push(sv(e, n, 0), sv(e, n, 1)); val.push(-cn0.st, -cn0.st);
+              if (cn0.sth && rP[n] > 0) { const [hi, hv] = hoopP[n]; hi.forEach((v, k) => { idx.push(v); val.push(-cn0.sth * rP[n] * hv[k]); }); }
+              return [idx, val, rP[n] * (cn.ct - cn0.st * gP[n])];
+            }
+            if (which === 1) {          // r x1 = k1 (S_r - S_z - r g) + r c1
+              idx.push(sv(e, n, 0), sv(e, n, 1)); val.push(cn0.k1, -cn0.k1);
+              return [idx, val, rP[n] * (cn.c1 - cn0.k1 * gP[n])];
+            }
+            idx.push(sv(e, n, 2)); val.push(2);   // r x2 = 2 S_tau
+            return [idx, val, 0];
+          });
+          const B = [0, 1, 2].map((w) => bernsteinOf(comp(w)));
+          for (let k = 0; k < 6; k++) if (!coefTip[k]) lp.addSOC([B[0][k], B[1][k], B[2][k]]);
+        }
+        continue;
+      }
       for (let ci = 0; ci < conesP[0].length; ci++) {
         let tmpl;
         if (!opts.nu) {
@@ -1107,10 +1353,10 @@
         });
       }
     }
-    yRow[nE] = lp.rlo.length;
-    const r = runLP(highs, lp, "max", opts);
+    yRow[nE] = lp.rlo.length; ySoc[nE] = lp.soc.length;
+    const r = solveLP(highs, lp, "max", opts);
     const area = Math.PI * b * b;
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true };
+    const out = solverInfo({ status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true }, r);
     if (r.status === 8 || r.status === 9) out.infeasible = true;
     if (r.x) {
       const util = new Float64Array(nE * 3), ind = new Float64Array(nE);
@@ -1123,8 +1369,9 @@
           util[e * 3 + i] = R > 1e-12 ? Math.min(1, q / (R * cpY)) : 1;
         }
         if (r.y) for (let k = yRow[e]; k < yRow[e + 1]; k++) ind[e] += Math.abs(r.y[k]);
+        else if (r.zs) for (let k = ySoc[e]; k < ySoc[e + 1]; k++) ind[e] += Math.abs(r.zs[k]);
       }
-      out.util = util; if (r.y) out.ind = ind;
+      out.util = util; if (r.y || r.zs) out.ind = ind;
     }
     return out;
   }
@@ -1254,8 +1501,8 @@
       else [a1, m1, q1].forEach((n) => { fixV(U(n)); fixV(Vv(n)); });
     });
     for (let n = 0; n < N; n++) if (Math.abs(pos[n][0]) < tolR) fixV(U(n));
-    const r = runLP(highs, lp, "min", opts);
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true, quad: true };
+    const r = solveLP(highs, lp, "min", opts);
+    const out = solverInfo({ status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj, V: r.obj, qu: r.obj / area, axisym: true, quad: true }, r);
     if (r.x) {
       for (let e = 0; e < nE; e++) { let gm = 0; lamOf[e].forEach(([v, w]) => (gm += w * Math.abs(r.x[v]))); strainOut[e] = gm / 6; }
       out.strain = strainOut; out.footing = { u: 0, v: r.x[v0], w: 0 };
@@ -1341,9 +1588,9 @@
         [a, m, q].forEach((n) => { fixV(U(n)); fixV(Vv(n)); });
       }
     });
-    const r = runLP(highs, lp, "min", opts);
+    const r = solveLP(highs, lp, "min", opts);
     const V = fr.w * fr.fix[0] + r.obj * fr.ref[0];
-    const out = { status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width, quad: true };
+    const out = solverInfo({ status: r.status, valid: r.valid, crossover: r.crossover, nVars: r.nVars, nRows: r.nRows, alpha: r.obj / fr.w, V: V, qu: V / fr.width, quad: true }, r);
     if (r.x) {
       const diss = new Float64Array(nE), strain = new Float64Array(nE);
       for (let e = 0; e < nE; e++) {
@@ -2003,6 +2250,10 @@
     return out;
   }
 
+  // every caller of the finite element solvers gets the exact-cone solve first, with the HiGHS fallback
+  lowerBound = conicFirst(lowerBound); upperBound = conicFirst(upperBound); upperBoundQ = conicFirst(upperBoundQ);
+  axiLowerBound = conicFirst(axiLowerBound); axiUpperBound = conicFirst(axiUpperBound);
+
   // run one finite element solve from plain (cloned) data, as sent to a parallel worker
   function runJob(highs, job) {
     const m = job.model; m.geo = geometry(m);
@@ -2012,6 +2263,6 @@
   }
   const api = { analyse, runJob, axiLowerBound, axiUpperBound, prepare, geometry, onDomain, buildTriMesh, buildQuadMesh, initialCells, refineCells, assignMaterials,
     lowerBound, upperBound, upperBoundQ, upperBoundDLO, dloAdaptive, dloVelocity, prandtlExtent, classical, sigmaV, unitWeightAt, soilAt,
-    porePressure, statusText, fixedDepths, columnWeight };
+    porePressure, statusText, fixedDepths, columnWeight, setConic };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.FELA = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
