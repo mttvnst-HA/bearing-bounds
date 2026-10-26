@@ -630,12 +630,21 @@
       const settings = Float64Array.from([opts.coneMaxIter || 100, opts.timeLimit || 600, tol, tol, opts.coneFeasTol || 1e-9, 1e-7, globalThis.__LPLOG ? 1 : 0, 1, 1, reg]);
       let out;
       try { out = CONIC.solve(n, m, q, colPtr, rowIdx, aVal, b, zr.length, nr.length, socDims, settings); }
-      catch (e) { return fail("Clarabel failed: " + (e && e.message ? e.message : e)); }
+      catch (e) {
+        // a trap (the module is built with panic = abort) can leave the instance unusable: stop using it
+        CONIC = null;
+        return fail("Clarabel failed: " + (e && e.message ? e.message : e));
+      }
       if (!out || out.length < 5) return fail("Clarabel rejected the problem data");
       const status = out[0];
       iters += out[1];
-      const info = { coneStatus: CLARABEL_STATUS[status] || "status " + status, iterations: iters, nCones: lp.soc.length };
+      const info = { coneStatus: CLARABEL_STATUS[status] || "status " + status, iterations: iters, nCones: lp.soc.length, checkOnly: lp.socCheckOnly ? lp.socCheckOnly.size : 0 };
       if (status !== 1 && status !== 4) return fail("Clarabel stopped: " + info.coneStatus, info);
+      // "Almost solved" met only Clarabel's reduced tolerances: keep its point only when the primal and dual
+      // objectives agree (the optimum of the cone problem lies between them), as a guard on its quality
+      const gap = Math.abs(out[3] - out[4]) / Math.max(1, Math.abs(out[3]));
+      info.gap = gap;
+      if (status === 4 && !(gap <= (opts.coneGapAccept || 1e-3))) return fail("Clarabel almost solved with a duality gap of " + gap.toExponential(1), info);
       // the point in the original variables
       const x = new Float64Array(n0);
       for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : Math.min(lp.up[j], Math.max(lp.lo[j], out[5 + col[j]]));
@@ -659,7 +668,9 @@
     // or an "almost solved" stall whose point misses the check, as on the axisymmetric lower bound and some
     // 6-node upper bounds), a larger regularisation usually converges cleanly.
     let r = attempt(1e-8);
-    if (!r.valid && r.reason !== "Clarabel rejected the problem data") r = attempt(1e-7);
+    if (!r.valid && CONIC && r.reason !== "Clarabel rejected the problem data") r = attempt(1e-7);
+    // as in runLP, a lower bound of zero or less is suspect: let HiGHS try
+    if (r.valid && sense === "max" && !(r.obj > 0)) return fail("the cone solution gave a load multiplier of zero or less", { coneStatus: r.coneStatus, iterations: r.iterations, gap: r.gap });
     return r;
   }
   // solve with the solver the problem was built for
@@ -670,7 +681,7 @@
   // which solver produced a result, and how well its point satisfied the constraints
   function solverInfo(out, r) {
     out.solver = r.solver;
-    ["nCones", "iterations", "coneStatus", "rowViol", "coneViol", "reason", "pinf"].forEach((k) => { if (r[k] != null) out[k] = r[k]; });
+    ["nCones", "checkOnly", "iterations", "coneStatus", "gap", "rowViol", "coneViol", "reason", "pinf"].forEach((k) => { if (r[k] != null) out[k] = r[k]; });
     return out;
   }
   // Run a finite element solver with exact cones and Clarabel when it is available; if that gives no
@@ -780,15 +791,16 @@
   }
   // lower bound: inscribed yield conditions at one stress point (variables ix, iy, it); returns the factor on
   // the cone radius that the linearisation guarantees
-  // (free: the point is on a traction-free surface, cone mode only)
+  // (free: the point is at a traction-free surface node, cone mode only)
   function addYieldLB(lp, ix, iy, it, cones, opts, free) {
     let cp = 1;
     cones.forEach((cn) => {
       if (opts._soc) {   // exact: (ct - st (sx + sy), k1 (sx - sy) + c1, 2 tau) in the second-order cone
         const forms = [[[ix, iy], [-cn.st, -cn.st], cn.ct], [[ix, iy], [cn.k1, -cn.k1], cn.c1], [[it], [2], 0]];
-        // A zero tension cut-off at a traction-free point (stress sigma_t along the surface only) leaves the
-        // cone no interior: there it is exactly sigma_t = sx + sy <= 0, which is solved instead (and the
-        // cone still checked)
+        // A zero tension cut-off at a traction-free surface node leaves the cone no interior: the stress there
+        // (in every triangle meeting the node, through traction continuity) is sigma_t along the surface only,
+        // and the cone is exactly sigma_t = sx + sy <= 0. That row is solved instead; the exact cone is still
+        // checked, so a point that is not in that state is rejected.
         if (free && cn.ct === 0 && cn.c1 === 0 && cn.st === 1 && cn.k1 === 1) { lp.addRow([ix, iy], [1, 1], -Infinity, 0); lp.addSOC(forms, true); return; }
         lp.addSOC(forms);
         return;
@@ -908,7 +920,11 @@
     // The objective is the load multiplier alpha: V' + uFoot = w (Vfix + alpha Vref), and likewise for H and M.
     const Av = lp.addVar(-Infinity, Infinity, 1), itf = interfaceOf(model);
     const vI = [Av], vC = [-fr.w * fr.ref[0]], hI = [], hC = [], mI = [], mC = [];
-    const tipAt = new Set(), freePt = new Set();   // traction-free surface nodes and stress points (cone mode)
+    // traction-free surface nodes and the stress points on traction-free edges (cone mode); freeAt leaves out
+    // the nodes also on another boundary (the footing corner, the mesh edge), where only the points of the
+    // surface triangles are traction-free
+    const tipAt = new Set(), otherAt = new Set(), freePt = new Set();
+    if (opts._soc) mesh.bnd.forEach((bd) => { if (bd.type !== "surface") [bd.P, bd.Q].forEach((X) => otherAt.add(key(X[0]) + ":" + key(X[1]))); });
     mesh.bnd.forEach((bd) => {
       const L = Math.hypot(bd.Q[0] - bd.P[0], bd.Q[1] - bd.P[1]);
       const ends = [[bd.i, bd.P], [bd.j, bd.Q]];
@@ -1000,6 +1016,7 @@
         }
       }
     }
+    const freeAt = new Set([...tipAt].filter((k) => !otherAt.has(k)));
     // yield rows (linearised) or cones (exact) of each stress point, for the refinement indicator
     const yRow = new Int32Array(nE * 3 + 1), ySoc = new Int32Array(nE * 3 + 1);
     let cpY = 1;
@@ -1007,7 +1024,7 @@
       const X = mesh.XY[e];
       for (let i = 0; i < 3; i++) {
         yRow[e * 3 + i] = lp.rlo.length; ySoc[e * 3 + i] = lp.soc.length;
-        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), conesAt(model, mats[e].layer, X[2 * i + 1]), opts, freePt.has(sv(e, i, 0)));
+        cpY = addYieldLB(lp, sv(e, i, 0), sv(e, i, 1), sv(e, i, 2), conesAt(model, mats[e].layer, X[2 * i + 1]), opts, freePt.has(sv(e, i, 0)) || freeAt.has(key(X[2 * i]) + ":" + key(X[2 * i + 1])));
       }
     }
     yRow[nE * 3] = lp.rlo.length; ySoc[nE * 3] = lp.soc.length;
@@ -1325,7 +1342,9 @@
             return [idx, val, 0];
           });
           const B = [0, 1, 2].map((w) => bernsteinOf(comp(w)));
-          for (let k = 0; k < 6; k++) if (!coefTip[k]) lp.addSOC([B[0][k], B[1][k], B[2][k]]);
+          // at fixed apex points only the hoop term (held to zero by its row) is left: those cones are
+          // checked after the solve but not sent to Clarabel
+          for (let k = 0; k < 6; k++) lp.addSOC([B[0][k], B[1][k], B[2][k]], !!coefTip[k]);
         }
         continue;
       }

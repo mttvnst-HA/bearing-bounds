@@ -2,10 +2,13 @@
 // Usage: npm run build && node tests/e2e.js     (first time: npx playwright install chromium)
 const { chromium } = require("playwright");
 const path = require("path");
+const fs = require("fs");
 const { pathToFileURL } = require("url");
 
 const page = pathToFileURL(path.join(__dirname, "..", "dist", "bearing-bounds-standalone.html")).href;
 let fails = 0;
+// a row of the solution detail table
+const detail = (pg, label) => pg.$eval("#detail", (t, l) => { const r = [...t.rows].find((x) => x.cells[0].textContent === l); return r ? r.cells[1].textContent : ""; }, label);
 const check = (name, ok, extra) => { if (!ok) fails++; console.log(`${ok ? "ok  " : "FAIL"} ${name}${extra ? "  (" + extra + ")" : ""}`); };
 
 (async () => {
@@ -33,7 +36,7 @@ const check = (name, ok, extra) => { if (!ok) fails++; console.log(`${ok ? "ok  
   const lb = parseFloat((await txt("fLB")).replace(/,/g, "")), ub = parseFloat((await txt("fUB")).replace(/,/g, ""));
   check("lower bound below upper bound", lb > 0 && lb <= ub, lb + " / " + ub);
   check("answer line shows the FS", /Factor of safety/.test(await txt("answer")));
-  const lbSolver = await p.$eval("#detail", (t) => { const r = [...t.rows].find((x) => /Lower-bound solver/.test(x.cells[0].textContent)); return r ? r.cells[1].textContent : ""; });
+  const lbSolver = await detail(p, "Lower-bound solver");
   check("lower bound solved with exact cones (Clarabel)", /^Clarabel/.test(lbSolver), lbSolver);
   check("animation tab opens after a run", (await p.$eval("[role=tab][aria-selected=true]", (e) => e.id)) === "tab-anim");
 
@@ -77,11 +80,35 @@ const check = (name, ok, extra) => { if (!ok) fails++; console.log(`${ok ? "ok  
   check("sliding lower bound below upper bound", hl > 0 && hl <= hu, hl + " / " + hu);
   await p.click("#lmode button:nth-child(1)"); await p.fill("#Hl", "0");
 
+  // the finite element upper bound, when asked for, also comes from Clarabel
+  await p.$eval("#feub", (e) => { e.checked = true; e.dispatchEvent(new Event("change")); });
+  await p.click("#go");
+  await p.waitForFunction(() => /Finished|stopped|crashed/.test(document.getElementById("status").textContent), null, { timeout: 240000 });
+  const ubSolver = await detail(p, "Finite element UB solver");
+  check("finite element upper bound solved with exact cones (Clarabel)", /^Clarabel/.test(ubSolver), ubSolver);
+  await p.$eval("#feub", (e) => { e.checked = false; e.dispatchEvent(new Event("change")); });
+
   // no horizontal scrolling at phone width
   await p.setViewportSize({ width: 390, height: 900 }); await p.waitForTimeout(300);
   check("no horizontal page scroll at 390 px", (await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0);
 
   check("no script errors", errors.length === 0, errors.join("; "));
+
+  // without the Clarabel module the page still works, with HiGHS alone
+  const noCone = path.join(__dirname, "..", "dist", "e2e-no-clarabel.html");
+  fs.writeFileSync(noCone, fs.readFileSync(path.join(__dirname, "..", "dist", "bearing-bounds-standalone.html"), "utf8")
+    .replace(/(<script id="wasm-clarabel" type="application\/octet-stream">)[^<]*(<\/script>)/, "$1$2"));
+  const p2 = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
+  const errors2 = [];
+  p2.on("pageerror", (e) => errors2.push(e.message));
+  await p2.goto(pathToFileURL(noCone).href);
+  await p2.waitForFunction(() => /Ready/.test(document.getElementById("status").textContent), null, { timeout: 60000 });
+  await p2.click("#go");
+  await p2.waitForFunction(() => /Finished|stopped|crashed/.test(document.getElementById("status").textContent), null, { timeout: 240000 });
+  const lb2 = await detail(p2, "Lower-bound solver");
+  check("without Clarabel the run finishes with HiGHS", /Finished/.test(await p2.$eval("#status", (e) => e.textContent)) && /^HiGHS/.test(lb2), lb2);
+  check("no script errors without Clarabel", errors2.length === 0, errors2.join("; "));
+  fs.unlinkSync(noCone);
   await browser.close();
   console.log(fails ? `${fails} check(s) failed` : "All checks passed");
   process.exit(fails ? 1 : 0);

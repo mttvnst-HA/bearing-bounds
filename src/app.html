@@ -959,7 +959,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   // which solver produced a finite element bound
   function solverText(x) {
     if (!x) return "–";
-    if (x.solver === "Clarabel") return "Clarabel, exact Mohr-Coulomb cones (" + fmt(x.iterations) + " iterations, checked)";
+    if (x.solver === "Clarabel") return "Clarabel, exact Mohr-Coulomb cones (" + fmt(x.iterations) + " iterations, " + (x.coneStatus === "almost solved" ? "almost solved, duality gap " + x.gap.toExponential(0) + ", " : "") + "checked)";
     return "HiGHS, linearised yield surface" + (x.fallback ? " (the exact-cone solve was not used: " + x.fallback + ")" : "");
   }
   function renderDetail(b) {
