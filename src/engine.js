@@ -769,10 +769,14 @@
        and at the top of every deeper layer. */
     if (!opts.noExtension) {
       const sTop = sigmaV(model, model.D);
-      const geoL = (y) => model.q0 + sigmaV(model, model.D - y) - sTop;
+      // beside the mesh the vertical stress is geostatic under the ground there, with the surcharge g.qs that
+      // actually acts on it (a slope lower than the embedment lowers the ground without reaching the base level)
+      const geoL = (y) => g.qs(model.xL) + sigmaV(model, model.D - y) - sTop;
       const yR = g.groundY(model.xR);
-      const geoR = (y) => (yR < -1e-12 ? sigmaV(model, model.D - y) - sigmaV(model, model.D - yR) : model.q0 + sigmaV(model, model.D - y) - sTop);
-      const deeper = model.layers.filter((l) => l.top > model.D + model.H + 1e-9);
+      const geoR = (y) => (yR < -1e-12 ? sigmaV(model, model.D - y) - sigmaV(model, model.D - yR) : g.qs(model.xR) + sigmaV(model, model.D - y) - sTop);
+      // every layer whose top is at or below the mesh base (same tolerance as fixedDepths, which does not
+      // make a boundary within 1e-6 of the base an element edge)
+      const deeper = model.layers.filter((l) => l.top > model.D + model.H - 1e-6);
       const H = model.H, inc = (L) => -(sigmaV(model, L.top) - sigmaV(model, model.D + H));
       const S = lp.addVar(-Infinity, Infinity, 0);
       const tied = { left: false, right: false };
@@ -1012,7 +1016,7 @@
       const coef = [fP, [fM[0].concat(fP[0], fQ[0]), fM[1].map((v) => 2 * v).concat(fP[1].map((v) => -0.5 * v), fQ[1].map((v) => -0.5 * v)), 2 * fM[2] - 0.5 * (fP[2] + fQ[2])], fQ];
       coef.forEach(([idx, val, c0]) => lp.addRow(idx, val, -Infinity, -c0));
     };
-    const deeper = model.layers.filter((l) => l.top > model.D + model.H + 1e-9);
+    const deeper = model.layers.filter((l) => l.top > model.D + model.H - 1e-6);
     const H = model.H, inc = (L) => -(sigmaV(model, L.top) - sigmaV(model, model.D + H));
     let SR = null;
     const tauRows = (cones) => { const out = []; cones.forEach((cn) => out.push([cn.k1 + cn.st, -cn.k1 + cn.st, cn.ct - cn.c1], [-cn.k1 + cn.st, cn.k1 + cn.st, cn.ct + cn.c1])); return out; };
@@ -1729,6 +1733,8 @@
     return m;
   }
   function checkModel(m) {
+    // the extensions check yield only at the top of each layer, which needs strength that does not fall with depth
+    if (m.layers.some((l) => (l.suGrad || 0) < 0)) throw new Error("The undrained strength cannot decrease with depth; use a gradient of zero or more.");
     if (m.axisym && !m.sym) throw new Error("The axisymmetric (circular) analysis needs a central vertical load on level ground.");
     if (m.axisym && m.layers.some((l) => l.kt != null || (l.aniso && (l.aniso.rc !== 1 || l.aniso.re !== 1)))) throw new Error("Tension cut-offs and anisotropic strength are not available in the axisymmetric analysis.");
     if (Math.abs(m.ecc) >= 0.95 * m.B / 2) throw new Error("The eccentricity must be less than 0.475 B.");
@@ -1781,7 +1787,8 @@
           fans = fans.filter((f) => f.kind === "footing"); fan.list = fans; res.slopeFansDropped = true;
           return mk(cs);
         }
-        if (model.geo.slope) throw e; res.meshFallback = true; return buildQuadMesh(model, cs);
+        // the axisymmetric solvers need a conforming mesh, so there is no quadtree fallback for them
+        if (model.geo.slope || model.axisym) throw e; res.meshFallback = true; return buildQuadMesh(model, cs);
       }
     };
     // Adaptive cycles (after Optum: start coarse, refine on the shear dissipation, 3 or 4 cycles). The first
@@ -1886,19 +1893,27 @@
   }
   async function strengthFS(highs, prepared, feModel, res, opts, say) {
     const t = opts.strength.target, tol = opts.strength.tol || 0.01, maxEval = opts.strength.maxEval || 9;
-    const mesh = res.mesh, dloOpts = Object.assign({}, opts, { dloNodes: Math.round((opts.dloNodes || 420) * 0.8) });
+    const mesh = res.mesh, dloOpts = Object.assign({}, opts, { dloNodes: Math.round((opts.dloNodes || 420) * 0.8) }), axi = !!feModel.axisym;
     const evals = [];
     const lbAt = async (F) => {
       say(`Factor of safety on strength: lower bound at F = ${F.toFixed(3)}`, 0.9); await tick();
-      const m = reducedModel(feModel, F), r = lowerBound(highs, m, mesh, assignMaterials(m, mesh), opts);
+      const m = reducedModel(feModel, F), r = (axi ? axiLowerBound : lowerBound)(highs, m, mesh, assignMaterials(m, mesh), opts);
       const a = r.valid ? r.alpha : -Infinity;
       evals.push({ kind: "LB", F: F, alpha: a });
       return a;
     };
+    // (status 10, unbounded, proves collapse; status 9, unbounded or infeasible, proves nothing)
     const ubAt = async (F) => {
       say(`Factor of safety on strength: upper bound at F = ${F.toFixed(3)}`, 0.95); await tick();
-      const r = dloAdaptive(highs, reducedModel(prepared, F), dloOpts);
-      const a = r.lines && r.valid ? r.alpha : (r.status === 10 || r.status === 9 ? -Infinity : NaN);
+      let a;
+      if (axi) {
+        // the plane-strain DLO is not an upper bound for the circle: use the axisymmetric solver on its mesh
+        const um = (res.ub && res.ub.mesh) || mesh, m = reducedModel(feModel, F), r = axiUpperBound(highs, m, um, assignMaterials(m, um), opts);
+        a = r && r.valid ? r.alpha : (r && r.status === 10 ? -Infinity : NaN);
+      } else {
+        const r = dloAdaptive(highs, reducedModel(prepared, F), dloOpts);
+        a = r.lines && r.valid ? r.alpha : (r.status === 10 ? -Infinity : NaN);
+      }
       evals.push({ kind: "UB", F: F, alpha: a });
       return a;
     };
@@ -1938,7 +1953,7 @@
       return { F: pf, other: nf };
     };
     const aLb1 = res.lb.valid ? res.lb.alpha : -Infinity;
-    const aUb1 = Math.min(res.dlo.valid ? res.dlo.alpha : Infinity, res.ub && res.ub.valid ? res.ub.alpha : Infinity);
+    const aUb1 = Math.min(res.dlo.valid && !axi ? res.dlo.alpha : Infinity, res.ub && res.ub.valid ? res.ub.alpha : Infinity);
     // lower bound on FS: largest F with alpha_LB(F) >= t (safe side is "alpha above t")
     let lo = await bracket(lbAt, 1, aLb1, (a) => a >= t, true);
     // upper bound on FS: smallest F with alpha_UB(F) <= t
@@ -1958,7 +1973,7 @@
       const mesh2 = r2.mesh, fe2 = r2.model;
       const lb2 = await bracket(async (F) => {
         say(`Factor of safety on strength: lower bound at F = ${F.toFixed(3)}`, 0.95); await tick();
-        const m = reducedModel(fe2, F / Fm), r = lowerBound(highs, m, mesh2, assignMaterials(m, mesh2), opts);
+        const m = reducedModel(fe2, F / Fm), r = (axi ? axiLowerBound : lowerBound)(highs, m, mesh2, assignMaterials(m, mesh2), opts);
         const a = r.valid ? r.alpha : -Infinity;
         evals.push({ kind: "LB", F: F, alpha: a });
         return a;

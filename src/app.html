@@ -522,6 +522,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       if (L.drained && !(L.phi > 0) && !(L.c > 0)) add("lp" + i, "Give this layer some strength: c′ or φ′.");
       if (L.drained && !(L.phi >= 0 && L.phi <= 50)) add("lp" + i, "Use φ′ between 0 and 50°.");
       if (!L.drained && !(L.c > 0)) add("lc" + i, "Enter an undrained strength.");
+      if (!L.drained && L.grad < 0) add("lg" + i, "The strength cannot decrease with depth; use zero or more.");
       if (L.drained && num(L.psi) != null && !(L.psi >= 0 && L.psi <= (L.phi || 0))) add("lpsi" + i, "Use a dilation angle between 0 and φ′, or leave it blank.");
       if (num(L.kt) != null && !(L.kt >= 0)) add("lkt" + i, "The tensile strength cannot be negative.");
       if (!L.drained && num(L.rc) != null && !(L.rc >= 0.3 && L.rc <= 3)) add("lrc" + i, "Use a ratio between 0.3 and 3, or leave it blank.");
