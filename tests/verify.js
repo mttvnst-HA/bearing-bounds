@@ -1,6 +1,8 @@
 // Solver verification: runs the engine in Node against known solutions and checks that the
-// bounds bracket them. Usage: node tests/verify.js [--std] [case,case,...]
+// bounds bracket them. Usage: node tests/verify.js [--std] [--no-cone] [case,case,...]
 // Quick mesh by default (a few minutes in total); --std uses the Standard mesh (slower, tighter).
+// The finite element bounds use exact cones and Clarabel, with HiGHS as the fallback; --no-cone uses
+// the linearised yield condition and HiGHS only.
 const path = require("path");
 const FELA = require(path.join(__dirname, "..", "src", "engine.js"));
 
@@ -18,6 +20,12 @@ const davis = (() => { const f = 25 * Math.PI / 180, s = 5 * Math.PI / 180, b = 
 const TWO_CLAY = { B: 2, D: 0, rough: true, layers: [{ bottom: 1, c: 100, phi: 0, gamma: 0, gammaSat: 0 }, { bottom: 1e9, c: 5, phi: 0, gamma: 0, gammaSat: 0 }] };
 const STEP = { B: 2, D: 2, rough: true, surcharge: 0, slope: { dist: 0, height: 1.9, angle: 30 }, layers: L1({ c: 0, phi: 35, gamma: 18 }) };
 const TOE = { B: 2, D: 2, rough: true, surcharge: 0, slope: { dist: 0, height: 2, angle: 45 }, layers: L1({ c: 20, phi: 0, gamma: 18 }) };
+// a fixed domain and mesh for the solver-path cases
+const fixedMesh = (m0, xL, xR, H) => {
+  const m = FELA.onDomain(FELA.prepare(Object.assign({ gammaW: 9.81, waterDepth: null }, m0)), xL, xR, H, { xL: xL * 0.7, xR: xR * 0.7, depth: H * 0.7 });
+  const mesh = FELA.buildTriMesh(m, FELA.initialCells(m, 5), { nTheta: 12, r0: 0.08, R: 1 });
+  return [m, mesh, FELA.assignMaterials(m, mesh)];
+};
 const CASES = {
   tresca: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, ref: 514.2, kind: "rigorous", note: "Prandtl Nc = 5.14" },
   nc20: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 10, phi: 20, gamma: 0 }) }, ref: 148.35, kind: "rigorous", note: "c' = 10, phi' = 20, weightless" },
@@ -66,10 +74,35 @@ const CASES = {
     const ub = FELA.dloAdaptive(highs, m, { dloNodes: 600 });
     return { lb: r.best.Vlb, ub: Math.min(r.best.Vub, ub.V), checks: [["short domain refused", refused]] };
   }, ref: NaN, kind: "approx", note: "2 m clay slope beside a footing 2 m deep (forces per metre)" },
+  // the solver paths: exact cones with check-only cut-off cones, a forced upper-bound fallback to HiGHS, a
+  // primal infeasible lower bound (as strengthFS meets when the reduced soil cannot carry its own weight), and
+  // HiGHS alone (the --no-cone path, kept in the default run); "cone" cases are skipped with --no-cone
+  cutoffW: { cone: true, run: async (highs) => {
+    const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, layers: L1({ c: 10, phi: 20, kt: 0, gamma: 18 }) }, 0, 6, 3);
+    const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
+    const ub = FELA.upperBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
+    return { lb: lb.qu, ub: ub.qu, checks: [["LB from Clarabel with check-only cut-off cones", lb.valid && lb.solver === "Clarabel" && lb.checkOnly > 0]] };
+  }, ref: NaN, kind: "approx", note: "zero tension cut-off, weighty: traction-free cut-off cones solved as rows" },
+  ubFallback: { cone: true, run: async (highs) => {
+    const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, 0, 5, 3);
+    const ub = FELA.upperBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3, coneMaxIter: 3 });
+    const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
+    return { lb: lb.qu, ub: ub.qu, checks: [["UB falls back to HiGHS", ub.valid && ub.solver === "HiGHS" && /iteration limit/.test(ub.fallback || "")]] };
+  }, ref: 514.2, kind: "rigorous", note: "Clarabel stopped after 3 iterations: upper bound from HiGHS" },
+  infeasible: { cone: true, run: async (highs) => {
+    const [m, mesh, mats] = fixedMesh({ B: 2, D: 0, rough: true, slope: { dist: 0, height: 4, angle: 60 }, layers: L1({ c: 2, phi: 0, gamma: 18 }) }, -6, 12, 9);
+    const lb = FELA.lowerBound(highs, m, mesh, mats, { p: 18, ipmTol: 1e-3 });
+    return { lb: 0, ub: 0, checks: [["no lower bound from an infeasible problem", !lb.valid && lb.infeasible && /primal infeasible/.test(lb.fallback || "")]] };
+  }, ref: NaN, kind: "approx", note: "steep weak slope: no admissible stress field (Clarabel, then HiGHS)" },
+  lpTresca: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, opts: { cone: false }, solver: "HiGHS", ref: 514.2, kind: "rigorous", note: "Prandtl, HiGHS only" },
+  lpNg30: { m: { B: 2, D: 0, rough: true, layers: L1({ c: 0, phi: 30, gamma: 18 }) }, opts: { cone: false }, solver: "HiGHS", ref: 18 * 14.75, kind: "rigorous", note: "Ngamma, HiGHS only" },
   // strength factor of safety of a circular footing uses the axisymmetric solvers
   circleFS: { m: { B: 0.5, D: 0, rough: true, axisym: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, axi: true,
     opts: { strength: { target: Math.PI * 0.25 * 0.25 * 6.05 * 100 / 2, remesh: false } }, ref: 2.0, kind: "fs", note: "circular, undrained, half the capacity (FS 2.0)" },
   circle: { m: { B: 2, D: 0, rough: true, axisym: true, layers: L1({ c: 100, phi: 0, gamma: 0 }) }, ref: 605, kind: "rigorous", axi: true, note: "circular, rough, undrained (Nc = 6.05)" },
+  // Martin's ABC (method of characteristics, Haar-von Karman): rough circle, phi' = 30, q = gamma B N_gamma / 2 with
+  // B the diameter: N_gamma = 15.54 (Qf/A = 310.8 kPa for gamma' = 10, B = 4 m; Knudsen and Mortensen 2016, Table 7)
+  circle30: { m: { B: 2, D: 0, rough: true, axisym: true, layers: L1({ c: 0, phi: 30, gamma: 18 }) }, ref: 18 * 15.54, kind: "rigorous", axi: true, note: "circular, rough, phi' = 30, self-weight (ABC N_gamma = 15.54)" },
 };
 // the same settings as the app (src/app.html QOPTS and QAXI)
 const OPTS = {
@@ -87,18 +120,23 @@ const AXI = {
   const pick = args.find((a) => !a.startsWith("--"));
   const names = pick ? pick.split(",") : Object.keys(CASES).filter((k) => !CASES[k].only);   // "only" cases run when named
   const highs = await require("highs")();
+  if (!args.includes("--no-cone")) FELA.setConic(require("./clarabel.js")());
   let fails = 0;
   for (const k of names) {
     const c = CASES[k];
     if (!c) { console.log(`unknown case ${k}`); fails++; continue; }
+    if (c.cone && args.includes("--no-cone")) { console.log(`skip ${k.padEnd(7)} (tests the Clarabel path)`); continue; }
     const t = Date.now();
     const o = Object.assign({}, OPTS[mode], c.axi ? AXI[mode] : {}, c.opts || {});
     if (!o.nu) delete o.nu;
     const ref = c.ref;
-    let lb, ub, extra = [];
+    let lb, ub, extra = [], how = "";
     if (c.run) ({ lb, ub, checks: extra } = await c.run(highs));   // fixed-domain case built directly
     else {
       const r = await FELA.analyse(highs, Object.assign({ gammaW: 9.81, waterDepth: null }, c.m), o);
+      const tag = (x) => (x ? x.solver + (x.fallback ? " (fallback: " + x.fallback + ")" : "") + " " + (x.time || 0).toFixed(1) + " s" : "");
+      how = [r.lb && "LB " + tag(r.lb), r.ub && "FE UB " + tag(r.ub)].filter(Boolean).join(", ");
+      if (c.solver) extra = [["bounds from " + c.solver, [r.lb, r.ub].every((x) => !x || x.solver === c.solver)]];
       lb = c.kind === "fs" ? r.strength.fsLb : c.q === "H" ? r.best.Hlb : r.best.lb; ub = c.kind === "fs" ? r.strength.fsUb : c.q === "H" ? r.best.Hub : r.best.ub;
     }
     const checks = [["LB <= UB", lb <= ub * (1 + 1e-6)]].concat(extra || []);
@@ -107,7 +145,7 @@ const AXI = {
     const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
     if (bad.length) fails++;
     const ratio = (v) => (isFinite(ref) ? (v / ref).toFixed(3) : v.toFixed(1));
-    console.log(`${bad.length ? "FAIL" : "ok  "} ${k.padEnd(7)} LB ${ratio(lb)}  UB ${ratio(ub)}  ${((Date.now() - t) / 1000).toFixed(0)} s  (${c.note})${bad.length ? "  failed: " + bad.join(", ") : ""}`);
+    console.log(`${bad.length ? "FAIL" : "ok  "} ${k.padEnd(7)} LB ${ratio(lb)}  UB ${ratio(ub)}  ${((Date.now() - t) / 1000).toFixed(0)} s  (${c.note})${bad.length ? "  failed: " + bad.join(", ") : ""}${how ? "\n       " + how : ""}`);
   }
   console.log(fails ? `${fails} case(s) failed` : "All cases passed");
   process.exit(fails ? 1 : 0);

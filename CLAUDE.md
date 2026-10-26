@@ -19,10 +19,11 @@ e. When reviewing a document, cite a short searchable text snippet, never a para
 ```bash
 npm install              # HiGHS solver + Playwright
 npm run build            # python scripts/build.py -> dist/
-npm run verify           # solver vs known solutions (Quick mesh, a few minutes)
+npm run verify           # solver vs known solutions (Quick mesh, a few minutes); add -- --no-cone for HiGHS only
 npm run verify:std       # Standard mesh, slower
 npm run e2e              # Playwright test of dist/bearing-bounds-standalone.html (needs `npx playwright install chromium` once)
 npm test                 # verify + build + e2e
+python scripts/build_clarabel.py   # rebuild vendor/clarabel from wasm/clarabel (needs Docker; rarely needed)
 ```
 
 Always run `npm run verify` after touching `src/engine.js`, and `npm run build && npm run e2e` after touching `src/app.html`. A change that breaks "LB <= reference <= UB" in verify is a correctness bug, not a tolerance to relax.
@@ -45,15 +46,17 @@ f3. Axisymmetric (circular footing, `model.axisym`): `axiLowerBound` (quadratic 
 
 f. LP solves go through `runLP`. A bound is accepted only when HiGHS reports a feasible primal point (`primal_solution_status` = 2); otherwise it re-solves with crossover, then dual simplex. Do not report bounds from unconverged solves.
 
-g. Meshing: `buildTriMesh` is a Bowyer-Watson Delaunay mesh with polar fans at the footing edges. It is triangulated band by band so layer boundaries, the water table, the slope face and toe are element edges. `buildQuadMesh` is a fallback for level ground.
+g. The finite element solvers (`lowerBound`, `upperBound`, `upperBoundQ`, `axiLowerBound`, `axiUpperBound`) are wrapped by `conicFirst`: they are first built with exact second-order cones (`opts._soc`, `lp.addSOC`) and solved by Clarabel (`runConic`, module registered with `setConic`), then rebuilt linearised for HiGHS if that fails. `runConic` accepts a point only after checking every row, bound and exact cone to 1e-6; never loosen that check or skip it. Stress points at the cone apex (traction-free, cohesionless) are fixed to zero in cone mode.
 
-h. Effective-stress basis throughout; pore pressure at the base is added back to report gross total pressure.
+h. Meshing: `buildTriMesh` is a Bowyer-Watson Delaunay mesh with polar fans at the footing edges. It is triangulated band by band so layer boundaries, the water table, the slope face and toe are element edges. `buildQuadMesh` is a fallback for level ground.
+
+i. Effective-stress basis throughout; pore pressure at the base is added back to report gross total pressure.
 
 ## UI (`src/app.html`)
 
-a. The build replaces three markers: `/*__HIGHS__*/`, `/*__ENGINE__*/`, `__WASM_B64__`. Keep them.
+a. The build replaces five markers: `/*__HIGHS__*/`, `/*__ENGINE__*/`, `__WASM_B64__`, `/*__CLARABEL__*/`, `__CLARABEL_B64__`. Keep them. Clarabel comes from `vendor/clarabel` (see its README for version and licence).
 
-b. The solver runs in a Web Worker built from a Blob of the inlined HiGHS and engine sources. The worker is discarded after every run to release WebAssembly memory. Never run the solver on the main thread (it froze and crashed Claude Desktop).
+b. The solver runs in a Web Worker built from a Blob of the inlined HiGHS, Clarabel and engine sources. The worker is discarded after every run to release WebAssembly memory. Never run the solver on the main thread (it froze and crashed Claude Desktop).
 
 c. State `S` stores every input in SI. `toSI`/`fromSI` convert at the field boundary. Strip loads are per unit length; other footings take totals. Switching footing type converts loads so the applied pressure stays the same.
 
