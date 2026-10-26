@@ -621,39 +621,46 @@
     const q = new Float64Array(n), sg = sense === "max" ? -1 : 1;
     for (let j = 0; j < n0; j++) if (!isFix[j]) q[col[j]] = sg * lp.cost[j];
     const tol = opts.coneTol || 1e-7;
-    // settings: max_iter, time_limit, tol_gap_abs, tol_gap_rel, tol_feas, tol_ktratio, verbose, equilibrate, presolve,
-    // static regularisation (see wasm/clarabel/src/lib.rs). The default regularisation is tried first; a numerical
-    // failure near the optimum (seen on the axisymmetric lower bound) is retried with a larger one.
     const colPtr = Uint32Array.from(cnt), socDims = Uint32Array.from(socKeep, () => 3);
-    let out, status = -1, iters = 0;
-    for (const reg of [1e-8, 1e-7]) {
+    let iters = 0;
+    // one Clarabel solve and the check of its point
+    const attempt = (reg) => {
+      // settings: max_iter, time_limit, tol_gap_abs, tol_gap_rel, tol_feas, tol_ktratio, verbose, equilibrate,
+      // presolve, static regularisation (see wasm/clarabel/src/lib.rs)
       const settings = Float64Array.from([opts.coneMaxIter || 100, opts.timeLimit || 600, tol, tol, opts.coneFeasTol || 1e-9, 1e-7, globalThis.__LPLOG ? 1 : 0, 1, 1, reg]);
+      let out;
       try { out = CONIC.solve(n, m, q, colPtr, rowIdx, aVal, b, zr.length, nr.length, socDims, settings); }
       catch (e) { return fail("Clarabel failed: " + (e && e.message ? e.message : e)); }
       if (!out || out.length < 5) return fail("Clarabel rejected the problem data");
-      status = out[0]; iters += out[1];
-      if (status !== 9 && status !== 10) break;   // retry only after a numerical error or insufficient progress
-    }
-    const info = { coneStatus: CLARABEL_STATUS[status] || "status " + status, iterations: iters, nCones: lp.soc.length };
-    if (status !== 1 && status !== 4) return fail("Clarabel stopped: " + info.coneStatus, info);
-    // the point in the original variables
-    const x = new Float64Array(n0);
-    for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : Math.min(lp.up[j], Math.max(lp.lo[j], out[5 + col[j]]));
-    // dual of the first component of every cone (a plastic multiplier; 0 for dropped cones)
-    const zs = new Float64Array(lp.soc.length), zBase = 5 + n + zr.length + nr.length;
-    socKeep.forEach((s, k) => (zs[s] = out[zBase + 3 * k]));
-    // check every constraint at x
-    let rowViol = 0, coneViol = 0;
-    for (let r = 0; r < R; r++) {
-      let ax = 0; for (let k = lp.rs[r]; k < lp.rs[r + 1]; k++) ax += lp.rv[k] * x[lp.ri[k]];
-      rowViol = Math.max(rowViol, lp.rlo[r] - ax, ax - lp.rup[r]);
-    }
-    const val = (fm) => { let v = fm.c; for (let k = 0; k < fm.idx.length; k++) v += fm.val[k] * x[fm.idx[k]]; return v; };
-    lp.soc.forEach((F) => { coneViol = Math.max(coneViol, Math.hypot(val(F[1]), val(F[2])) - val(F[0])); });
-    let obj = 0; for (let j = 0; j < n0; j++) obj += lp.cost[j] * x[j];
-    Object.assign(info, { rowViol: rowViol, coneViol: coneViol });
-    if (!(rowViol <= FEAS_TOL && coneViol <= FEAS_TOL)) return fail("the solution failed the admissibility check (rows " + rowViol.toExponential(1) + ", cones " + coneViol.toExponential(1) + ")", info);
-    return Object.assign({ status: 7, optimal: status === 1, valid: true, crossover: false, pinf: Math.max(0, rowViol, coneViol), obj: obj, x: x, y: null, zs: zs, nVars: n0, nRows: R, solver: "Clarabel" }, info);
+      const status = out[0];
+      iters += out[1];
+      const info = { coneStatus: CLARABEL_STATUS[status] || "status " + status, iterations: iters, nCones: lp.soc.length };
+      if (status !== 1 && status !== 4) return fail("Clarabel stopped: " + info.coneStatus, info);
+      // the point in the original variables
+      const x = new Float64Array(n0);
+      for (let j = 0; j < n0; j++) x[j] = isFix[j] ? fixed[j] : Math.min(lp.up[j], Math.max(lp.lo[j], out[5 + col[j]]));
+      // dual of the first component of every cone (a plastic multiplier; 0 for dropped cones)
+      const zs = new Float64Array(lp.soc.length), zBase = 5 + n + zr.length + nr.length;
+      socKeep.forEach((s, k) => (zs[s] = out[zBase + 3 * k]));
+      // check every constraint at x
+      let rowViol = 0, coneViol = 0;
+      for (let r = 0; r < R; r++) {
+        let ax = 0; for (let k = lp.rs[r]; k < lp.rs[r + 1]; k++) ax += lp.rv[k] * x[lp.ri[k]];
+        rowViol = Math.max(rowViol, lp.rlo[r] - ax, ax - lp.rup[r]);
+      }
+      const val = (fm) => { let v = fm.c; for (let k = 0; k < fm.idx.length; k++) v += fm.val[k] * x[fm.idx[k]]; return v; };
+      lp.soc.forEach((F) => { coneViol = Math.max(coneViol, Math.hypot(val(F[1]), val(F[2])) - val(F[0])); });
+      let obj = 0; for (let j = 0; j < n0; j++) obj += lp.cost[j] * x[j];
+      Object.assign(info, { rowViol: rowViol, coneViol: coneViol });
+      if (!(rowViol <= FEAS_TOL && coneViol <= FEAS_TOL)) return fail("the solution failed the admissibility check (rows " + rowViol.toExponential(1) + ", cones " + coneViol.toExponential(1) + ")", info);
+      return Object.assign({ status: 7, optimal: status === 1, valid: true, crossover: false, pinf: Math.max(0, rowViol, coneViol), obj: obj, x: x, y: null, zs: zs, nVars: n0, nRows: R, solver: "Clarabel" }, info);
+    };
+    // Clarabel's default static regularisation first. When that gives no accepted point (a numerical error,
+    // or an "almost solved" stall whose point misses the check, as on the axisymmetric lower bound and some
+    // 6-node upper bounds), a larger regularisation usually converges cleanly.
+    let r = attempt(1e-8);
+    if (!r.valid && r.reason !== "Clarabel rejected the problem data") r = attempt(1e-7);
+    return r;
   }
   // solve with the solver the problem was built for
   function solveLP(highs, lp, sense, opts) {

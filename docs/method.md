@@ -64,37 +64,41 @@ c. **The cone apex.** A traction-free surface point of cohesionless soil with no
 
 d. **Admissibility check.** Clarabel's point is accepted only after every constraint of the problem is checked at that point, with the absolute 1e-6 rule that the HiGHS path uses: every equality and inequality row (equilibrium, tractions, boundary and footing conditions, the extension beside and below the mesh, the flow rule and footing interface in the upper bound), every variable bound, and every cone, exactly. The bound is recomputed from that point. To make the check pass at points where the yield condition is active, Clarabel solves with every cone narrowed by a relative 1e-6; the check uses the exact cone. The point is accepted when Clarabel reports "Solved" or "AlmostSolved" and the check passes. Otherwise (any other status, a failed check, or no Clarabel module) the solver runs again with the linearised yield surface and HiGHS, and the solution detail says why.
 
-e. **Numerical settings.** Gap tolerances 1e-7, feasibility tolerance 1e-9, at most 100 iterations. If Clarabel stops with a numerical error or insufficient progress, the solve is repeated once with static regularisation 1e-7 instead of 1e-8; the axisymmetric lower bound needed that.
+e. **Numerical settings.** Gap tolerances 1e-7, feasibility tolerance 1e-9, at most 100 iterations. If the first solve gives no accepted point (a numerical error, or an "almost solved" stall whose point misses the 1e-6 check), it is repeated once with static regularisation 1e-7 instead of Clarabel's default 1e-8. The axisymmetric lower bound and some 6-node upper bounds (eccentric load, slope) needed that; with it they converge cleanly in 25 to 35 iterations.
 
-f. **Effect.** See the timing table in the Verification section. The cone solves take 25 to 40 interior-point iterations whatever the mesh, and the bounds are tighter because nothing is lost to the polygon.
+f. **Effect.** See the Verification table. A cone solve takes 20 to 70 interior-point iterations and a few seconds where HiGHS took one to eight minutes on the Standard mesh, and the bounds are tighter because nothing is lost to the polygon: the Standard lower bounds rise by up to 2% (sliding 0.947 to 0.966, Nγ 0.926 to 0.942, circle 0.968 to 0.977).
+
+g. **Remaining fallback.** A zero tension cut-off (kₜ = 0) in weightless soil leaves large zones at the apex of the cut-off cone (zero stress beside the Prandtl zone); Clarabel stalls there and the lower bound falls back to HiGHS. The result is still a valid bound; it just takes the HiGHS time plus the failed cone attempt.
 
 ## Verification (Standard mesh)
 
-Standard mesh: lifted 32-sided yield polygon, 2 adaptive cycles, 6-node finite element upper bound. The "before" columns are the 2026-10-24 values (24-sided polygon, one mesh).
+Standard mesh: exact cones (Clarabel) with the 32-sided lifted polygon and HiGHS as fallback, 2 adaptive cycles, 6-node finite element upper bound. The "HiGHS only" column is the same run with `--no-cone` (the linearised yield surface throughout); it agrees with the previous version of this table to within 0.002. Times are the whole case (all solves, both cycles) in seconds on the owner's laptop (Intel i5-1035G7, Node 24, one solve at a time), measured 2026-10-25.
 
-| Case | Reference | LB ÷ ref. | UB ÷ ref. | Before: LB / UB |
-|---|---|---|---|---|
-| Undrained, weightless, rough (Nc = 5.14) | 5.14 sᵤ | 0.994 | 1.009 | 0.992 / 1.009 |
-| c′ = 10, φ′ = 20°, weightless (Nc = 14.8) | 148.3 | 0.980 | 1.023 | 0.969 / 1.023 |
-| Surcharge only, φ′ = 30°, smooth (Nq = 18.4) | 184.0 | 0.886 | 1.026 | 0.884 / 1.026 |
-| Self-weight, φ′ = 30°, rough (Nγ = 14.75, Martin) | 265.5 | 0.927 | 1.108 | 0.910 / 1.189 |
-| Self-weight, φ′ = 40°, rough (Nγ = 85.6, Martin) | 1541 | 0.887 | 1.171 | 0.833 / 1.266 |
-| Crust: sᵤ 100 to 0.5 m over sᵤ 10, B = 2 m (true load ≤ 110.7) | ≤ 110.7 | 0.915 | 1.001 | 0.915 / 1.052 |
-| Inclined, undrained, H/(B·sᵤ) = 0.5 (Green 1954) | 448.4 | 0.993 | 1.013 | 0.994 / 1.013 |
-| Same, H = 100 held and V increased | 448.4 | 0.992 | 1.016 | new |
-| Same, V held and H increased (sliding) | H = 100 | 0.947 | 1.085 | new |
-| Eccentric, undrained, e = 0.1B (Meyerhof effective width) | 411.4 | 1.011 | 1.056 | 1.006 / 1.062 |
-| Footing at crest of a 30° undrained slope, 4 m high, weightless | no closed form | Nc 4.06 | Nc 4.13 | 4.06 / 4.13 |
-| Davis: c′ = 10, φ′ = 25°, ψ′ = 5°, weightless (c* Nc(φ*)) | 176.4 | 0.976 | 1.022 | new |
-| Tension cut-off kₜ = 0, c′ = 10, φ′ = 20° (Prandtl is an upper limit) | ≤ 148.3 | 0.975 | 1.023 | new |
-| Anisotropic clay, sᵤ,c = 1.6 sᵤ, sᵤ,e = 0.6 sᵤ (no closed form) | – | 546.8 | 555.2 | new |
-| Inclined as Green, interface factor R = 0.6 (no closed form) | – | 445.4 | 454.3 | new |
-| Strength factor of safety at half the Prandtl load (exact 2.0) | 2.0 | 0.990 | 1.013 | new |
-| Circular, rough, undrained, axisymmetric (Nc = 6.05, Eason and Shield) | 605 | 0.968 | 1.048 | new |
+| Case | Reference | LB ÷ ref. | UB ÷ ref. | HiGHS only: LB / UB | Time, cones (s) | Time, HiGHS only (s) |
+|---|---|---|---|---|---|---|
+| Undrained, weightless, rough (Nc = 5.14) | 5.14 sᵤ | 0.997 | 1.010 | 0.994 / 1.010 | 40 | 113 |
+| c′ = 10, φ′ = 20°, weightless (Nc = 14.8) | 148.3 | 0.987 | 1.023 | 0.980 / 1.023 | 72 | 360 |
+| Surcharge only, φ′ = 30°, smooth (Nq = 18.4) | 184.0 | 0.892 | 1.017 | 0.887 / 1.027 | 52 | 1708 |
+| Self-weight, φ′ = 30°, rough (Nγ = 14.75, Martin) | 265.5 | 0.942 | 1.096 | 0.926 / 1.108 | 49 | 446 |
+| Crust: sᵤ 100 to 0.5 m over sᵤ 10, B = 2 m (true load ≤ 110.7) | ≤ 110.7 | 0.917 | 0.999 | 0.915 / 1.002 | 18 | 239 |
+| Inclined, undrained, H/(B·sᵤ) = 0.5 (Green 1954) | 448.4 | 0.996 | 1.014 | 0.993 / 1.014 | 22 | 422 |
+| Same, H = 100 held and V increased | 448.4 | 0.995 | 1.016 | 0.992 / 1.016 | 19 | 295 |
+| Same, V held and H increased (sliding) | H = 100 | 0.966 | 1.085 | 0.947 / 1.085 | 20 | 332 |
+| Eccentric, undrained, e = 0.1B (Meyerhof effective width) | 411.4 | 1.014 | 1.053 | 1.010 / 1.057 | 43 | 1083 |
+| Footing at crest of a 30° undrained slope, 4 m high, weightless | no closed form | 407.6 | 413.2 | 406.2 / 413.2 | 34 | 272 |
+| Davis: c′ = 10, φ′ = 25°, ψ′ = 5°, weightless (c* Nc(φ*)) | 176.4 | 0.984 | 1.022 | 0.976 / 1.022 | 17 | 345 |
+| Tension cut-off kₜ = 0, c′ = 10, φ′ = 20° (Prandtl is an upper limit) | ≤ 148.3 | 0.969 (HiGHS) | 1.023 | 0.975 / 1.023 | 405 | 765 |
+| Anisotropic clay, sᵤ,c = 1.6 sᵤ, sᵤ,e = 0.6 sᵤ (no closed form) | – | 548.4 | 555.4 | 546.8 / 555.4 | 36 | 347 |
+| Inclined as Green, interface factor R = 0.6 (no closed form) | – | 446.7 | 454.5 | 445.4 / 454.5 | 75 | 873 |
+| Strength factor of safety at half the Prandtl load (exact 2.0) | 2.0 | 0.993 | 1.014 | 0.990 / 1.014 | 80 | 249 |
+| Circular, rough, undrained, axisymmetric, FS at half capacity (exact 2.0) | 2.0 | 0.973 | 1.045 | 0.964 / 1.053 | 81 | 540 |
+| Circular, rough, undrained, axisymmetric (Nc = 6.05, Eason and Shield) | 605 | 0.977 | 1.041 | 0.968 / 1.049 | 24 | 172 |
+
+Every bound in the cone column came from Clarabel except the zero tension cut-off lower bound, which falls back to HiGHS (see Exact cones g). The whole Standard verification (17 analysed cases plus two fixed-mesh regression cases) took 18.8 minutes with cones against 143 minutes with HiGHS only (7.6 times faster; 11 times without the cut-off case). On the Quick mesh it took 5.0 minutes against 14.7. Every lower bound is equal or higher with cones, except the cut-off case, whose HiGHS fallback ran on a slightly different adaptive mesh; every upper bound is equal or lower.
 
 Frictional circular footings have no exact reference here. Two consistency checks (axisymmetric, about 650 elements): a weightless smooth circle at φ′ = 30° with surcharge gives N_q from 25.8 to 34.1, which brackets the usual estimate of about 29 (strip 18.4 × Vesić s_q = 1.58); a rough circle on weighty sand at φ′ = 30° gives N_γ (on ½γB) from 12.1 to 20.1. The upper bound is loose for frictional self-weight. These frictional axisymmetric results need the independent review in the backlog before design use.
 
-The eccentric lower bound sits slightly above the effective-width estimate, consistent with published limit-analysis studies that find the effective-width method slightly conservative. A Standard run of one of these cases now takes 2 to 7 minutes on a desktop (before: 1 to 2).
+The eccentric lower bound sits slightly above the effective-width estimate, consistent with published limit-analysis studies that find the effective-width method slightly conservative. With exact cones a Standard run of one of these cases takes about 15 to 80 seconds in Node (2 to 30 minutes with HiGHS only).
 
 ## Review history
 
@@ -152,7 +156,7 @@ h. **Lower bound beside slopes in clay.** The half-space extension has uniform h
 
 i. Tension cut-off and anisotropic strength are not available in the axisymmetric analysis.
 
-j. The axisymmetric and Fine runs are slow (minutes) because their LPs are large.
+j. Fine runs are still slow (minutes): the discontinuity layout LP and any HiGHS fallback are large.
 
 ## Backlog (suggested next steps)
 
@@ -166,4 +170,4 @@ d. Load–displacement (serviceability) analysis.
 
 e. A decaying half-space extension for slopes (Known limits h).
 
-f. Speed: the axisymmetric LPs, and a conic solver if one becomes available in WebAssembly.
+f. Speed: the remaining HiGHS fallback for a zero tension cut-off (Exact cones g), and the discontinuity layout LP, which is now the slowest part of a Quick run.
