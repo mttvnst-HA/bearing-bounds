@@ -184,7 +184,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   <header class="top">
     <div>
       <h1>Bearing <span>Bounds</span></h1>
-      <p>Collapse load of shallow foundations bracketed from below and above by plane-strain limit analysis on layered Mohr-Coulomb soil.</p>
+      <p>Collapse load of shallow foundations bracketed from below and above by limit analysis (plane strain, or axisymmetric for circular footings) on layered Mohr-Coulomb soil.</p>
     </div>
     <div class="units" role="group" aria-label="Unit system">
       <button type="button" id="u-us" aria-pressed="true">US · ft, psf</button>
@@ -202,7 +202,10 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
           <label class="f" id="wrap-L"><span id="lbl-L">Length L</span><input id="L" type="number" step="any" min="0" inputmode="decimal"></label>
           <label class="f" id="wrap-D"><span id="lbl-D">Embedment D</span><input id="D" type="number" step="any" min="0" inputmode="decimal"></label>
         </div>
-        <label class="chk"><input type="checkbox" id="rough" checked> Rough base (full soil–footing adhesion)</label>
+        <label class="chk"><input type="checkbox" id="rough" checked> Rough base (soil–footing friction and adhesion)</label>
+        <label class="f" id="wrap-rI"><span>Base interface factor R (0 to 1)</span><input id="rI" type="number" step="any" min="0" max="1" inputmode="decimal"></label>
+        <p class="hint" id="hint-rI">Under the footing, tan δ = R tan φ′ and adhesion = R c′ (or R sᵤ). R = 1 uses the full soil strength; about 0.67 is common for cast-in-place concrete on sand.</p>
+        <label class="chk" id="wrap-axi"><input type="checkbox" id="axi" checked> Axisymmetric analysis: rigorous bounds for the circular footing</label>
       </div>
       <div class="sec">
         <h2>Loading</h2>
@@ -215,7 +218,8 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
           <label class="f" id="wrap-Hl"><span id="lbl-H">Horizontal load H</span><input id="Hl" type="number" step="any" inputmode="decimal"></label>
           <label class="f" id="wrap-ec"><span id="lbl-e">Eccentricity e</span><input id="ec" type="number" step="any" inputmode="decimal"></label>
         </div>
-        <p class="hint">H and e act across the width B. Positive values point to the right, toward the slope when there is one. All loads are increased together until collapse.</p>
+        <div class="seg" id="lmode" role="group" aria-label="How the loads are increased to collapse"></div>
+        <p class="hint" id="lmodeHint"></p>
         <label class="f" id="wrap-qs"><span id="lbl-q">Ground surcharge beside footing</span><input id="qs" type="number" step="any" min="0" inputmode="decimal"></label>
       </div>
       <div class="sec">
@@ -241,6 +245,9 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
         <div class="seg" id="quality" role="group" aria-label="Mesh quality"></div>
         <p class="hint" id="qualityHint"></p>
         <label class="chk"><input type="checkbox" id="feub"> Always run the finite element upper bound (adds the dissipation view)</label>
+        <label class="f"><span>Factor of safety on soil strength</span><select id="sfs"><option value="off">Not computed</option><option value="load">With the applied loads (strength reduction)</option><option value="slope">Slope alone, without the footing load</option></select></label>
+        <p class="hint" id="sfsHint">Strength reduction divides c′, sᵤ and tan φ′ by F until collapse; it adds several solves to the run.</p>
+        <label class="chk" id="wrap-sfan"><input type="checkbox" id="sfan"> Mesh fans at the slope crest and toe (rarely tightens the bounds; slower)</label>
       </div>
       <div class="run">
         <div class="runrow">
@@ -268,6 +275,8 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
         </div>
         <div class="bar dimmable"><svg id="barsvg" role="img" aria-label="Collapse pressure range chart"></svg></div>
         <p class="foot dimmable" id="classicWhy"></p>
+        <p class="foot dimmable" id="sumMean"></p>
+        <p class="foot dimmable" id="sumSfs"></p>
         <p class="foot" id="sumFoot"></p>
       </section>
 
@@ -301,30 +310,38 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
         <summary><h3>Method, limits and verification</h3></summary>
         <div class="inner">
         <ol class="notes">
-          <li><b>Lower bound (LB)</b>: finite element limit analysis (FELA) with linear stress triangles and statically admissible stress discontinuities on every edge, an inscribed linearised Mohr-Coulomb yield surface, and a radial fan of elements at the footing edge. The stress field is extended to the infinite half-space beside and below the mesh (zero shear, geostatic vertical stress beside it, uniform horizontal stress below it, with yield checked in every deeper layer), so the result is a rigorous lower bound whatever the mesh size.</li>
-          <li><b>Upper bound (UB)</b>: discontinuity layout optimisation (DLO), which finds the critical translational mechanism among every line joining a grid of nodes. The domain grows until the mechanism is clear of its edges, then a finer grid is fitted to the mechanism. For layered profiles, combined loads or slopes, or when you tick the option, a finite element UB (linear velocity triangles with velocity discontinuities and a circumscribed yield surface) also runs; the lower of the two is reported.</li>
-          <li>Both bounds come from linear programs (LP) solved in your browser with the HiGHS interior-point solver, in a background worker. A solution is accepted only if the solver reports a feasible primal point; otherwise it re-solves with crossover, and if that also fails no bound is reported.</li>
+          <li><b>Lower bound (LB)</b>: finite element limit analysis (FELA) with linear stress triangles and statically admissible stress discontinuities on every edge, an inscribed linearised yield surface, and a radial fan of elements at the footing edge. Quick uses an 18-sided polygon; Standard and Fine use a 32- or 64-sided lifted polygon (Ben-Tal and Nemirovski) at about the same cost. The stress field is extended to the infinite half-space beside and below the mesh (zero shear, geostatic vertical stress beside it, uniform horizontal stress below it, with yield checked in every deeper layer), so the result is a rigorous lower bound whatever the mesh size.</li>
+          <li><b>Adaptive mesh</b>: Standard and Fine solve on 2 or 3 meshes, each refined where the previous solution was plastic (the lower bound's plastic multipliers and the finite element upper bound's plastic strain), after OptumG2. The best bound of each kind is kept.</li>
+          <li><b>Upper bound (UB)</b>: discontinuity layout optimisation (DLO), which finds the critical translational mechanism among every line joining a grid of nodes, on a domain grown until the mechanism is clear of its edges. A finite element UB also runs for layered profiles, slopes, combined loads and (Standard, Fine) frictional soil, or when you tick the option: 6-node quadratic velocity triangles on Standard and Fine, linear triangles with velocity discontinuities on Quick. The lowest valid UB is reported.</li>
+          <li><b>Circular footings</b> under a central vertical load on level ground are analysed as axisymmetric, with full three-dimensional Mohr-Coulomb (the hoop stress is a principal stress): quadratic r-weighted stresses for the LB, quadratic velocities with velocity jumps for the UB. These are rigorous bounds for the circle. Untick the option, or apply H, e or a slope, to use the plane-strain estimate with shape factors instead.</li>
+          <li>Both bounds come from linear programs (LP) solved in your browser with the HiGHS interior-point solver, in a background worker. A bound is accepted only from a feasible primal point.</li>
           <li>The mesh follows every layer boundary, the water table and the slope, so no element straddles two materials.</li>
           <li>The analysis is in effective stress throughout, using buoyant unit weight below the water table for every layer. For undrained (φ = 0) layers this changes nothing but a uniform shift by the pore pressure. Reported pressures are gross total pressures at the footing base: the effective result plus the pore pressure there, so they compare directly with the applied load.</li>
-          <li><b>Footing and loads</b>: the footing is a rigid body that can settle, slide, rotate and lift off. Its base is a no-tension interface, rough (soil strength) or smooth. Vertical load V, horizontal load H and moment M = V·e are increased together in the proportions you enter until collapse; the factor of safety is the factor on that whole load. When the load is vertical and central on level ground, a symmetric half section is solved; otherwise the full section is solved.</li>
+          <li><b>Footing and loads</b>: the footing is a rigid body that can settle, slide, rotate and lift off, on a no-tension interface that is smooth, or rough with an interface factor R (tan δ = R tan φ′, adhesion = R c′ or R sᵤ). Loads are increased in one of three ways: all together (V, H and M = V·e in proportion; FS on the whole load); V increased with H held (FS on V); or V held with H increased (sliding capacity, FS on H). When the load is vertical and central on level ground, a symmetric half section is solved.</li>
+          <li><b>Factor of safety on strength</b> (optional): c′, sᵤ and tan φ′ are divided by F with the loads held, as in OptumG2's strength reduction. The LB on the factor is the largest F proven safe by a lower-bound solve and the UB the smallest F proven unsafe by an upper-bound solve. "Slope alone" uses zero footing load. Below an undrained slope the LB is limited to 4 sᵤ / (γ × slope height) by the half-space extension, so that bracket can be wide.</li>
+          <li><b>Soil models</b>: Mohr-Coulomb with associated flow. A dilation angle ψ′ &lt; φ′ uses Davis's reduced strength (an estimate of non-associated behaviour; the bounds are rigorous for the reduced soil). Undrained layers can be anisotropic (compression and extension strengths as ratios of the plane-strain sᵤ, Davis and Christian ellipse). Any layer can have a tension cut-off. Neither of the last two is available in the axisymmetric analysis.</li>
           <li><b>Slope</b>: a slope on the right of the footing is described by the distance from the footing edge to the crest, its height and its angle, with level ground behind the crest and beyond the toe. The water table must be at or below the toe.</li>
           <li>Embedment is modelled as a surcharge equal to the overburden at the footing base, so the shear strength of soil above the base is ignored (conservative). The section views hatch that soil.</li>
-          <li>Square, rectangular, circular, mat and slab foundations scale the plane-strain bounds by the ratio of classical bearing capacity with and without Vesić/De Beer shape factors for the soil at the base (using the effective width B − 2e). That adjusted pair is an engineering estimate, not a rigorous bound. H and e act across B only.</li>
-          <li>Self-weight bounds in cohesionless soil converge slowly, so expect a gap of roughly −10 to −17% / +19 to +27% there (see verification). Unsymmetric cases solve the full section and take about twice as long.</li>
+          <li>Square, rectangular, mat and slab foundations, and circles analysed in plane strain, scale the plane-strain bounds by the ratio of classical bearing capacity with and without Vesić/De Beer shape factors for the soil at the base (using the effective width B − 2e). That adjusted pair is an engineering estimate, not a rigorous bound. H and e act across B only.</li>
+          <li>The mean of the bounds is shown with ± half the gap as an estimate only; design on the lower bound. Self-weight bounds in cohesionless soil converge slowly (see verification), and there the upper bound is usually further from the true value.</li>
         </ol>
-        <h3>Verification (Standard mesh, strip footing)</h3>
+        <h3>Verification (Standard mesh)</h3>
         <table class="ver">
           <thead><tr><th>Case</th><th class="n">Reference</th><th class="n">LB ÷ ref.</th><th class="n">UB ÷ ref.</th></tr></thead>
           <tbody>
-            <tr><td>Undrained, weightless, rough (N<sub>c</sub> = 5.14)</td><td class="n" data-l="Ref.">5.14 s<sub>u</sub></td><td class="n" data-l="LB">0.992</td><td class="n" data-l="UB">1.009</td></tr>
-            <tr><td>c′ = 10, φ′ = 20°, weightless (N<sub>c</sub> = 14.8)</td><td class="n" data-l="Ref.">148.3</td><td class="n" data-l="LB">0.969</td><td class="n" data-l="UB">1.023</td></tr>
-            <tr><td>Surcharge only, φ′ = 30°, smooth (N<sub>q</sub> = 18.4)</td><td class="n" data-l="Ref.">184.0</td><td class="n" data-l="LB">0.884</td><td class="n" data-l="UB">1.026</td></tr>
-            <tr><td>Self-weight, φ′ = 30°, rough (N<sub>γ</sub> = 14.75, Martin)</td><td class="n" data-l="Ref.">265.5</td><td class="n" data-l="LB">0.910</td><td class="n" data-l="UB">1.189</td></tr>
-            <tr><td>Self-weight, φ′ = 40°, rough (N<sub>γ</sub> = 85.6, Martin)</td><td class="n" data-l="Ref.">1541</td><td class="n" data-l="LB">0.833</td><td class="n" data-l="UB">1.266</td></tr>
-            <tr><td>Crust: s<sub>u</sub> 100 to 0.5 m over s<sub>u</sub> 10, B = 2 m, rough (true load ≤ 110.7)</td><td class="n" data-l="Ref.">≤ 110.7</td><td class="n" data-l="LB">0.915</td><td class="n" data-l="UB">1.052</td></tr>
-            <tr><td>Inclined, undrained, H/(B s<sub>u</sub>) = 0.5 (Green 1954, V/(B s<sub>u</sub>) = 4.48)</td><td class="n" data-l="Ref.">448.4</td><td class="n" data-l="LB">0.994</td><td class="n" data-l="UB">1.013</td></tr>
-            <tr><td>Eccentric, undrained, e = 0.1B (Meyerhof effective width, 0.8 × 5.14 s<sub>u</sub>)</td><td class="n" data-l="Ref.">411.4</td><td class="n" data-l="LB">1.006</td><td class="n" data-l="UB">1.062</td></tr>
+            <tr><td>Undrained, weightless, rough (N<sub>c</sub> = 5.14)</td><td class="n" data-l="Ref.">5.14 s<sub>u</sub></td><td class="n" data-l="LB">0.994</td><td class="n" data-l="UB">1.010</td></tr>
+            <tr><td>c′ = 10, φ′ = 20°, weightless (N<sub>c</sub> = 14.8)</td><td class="n" data-l="Ref.">148.3</td><td class="n" data-l="LB">0.980</td><td class="n" data-l="UB">1.023</td></tr>
+            <tr><td>Surcharge only, φ′ = 30°, smooth (N<sub>q</sub> = 18.4)</td><td class="n" data-l="Ref.">184.0</td><td class="n" data-l="LB">0.887</td><td class="n" data-l="UB">1.027</td></tr>
+            <tr><td>Self-weight, φ′ = 30°, rough (N<sub>γ</sub> = 14.75, Martin)</td><td class="n" data-l="Ref.">265.5</td><td class="n" data-l="LB">0.926</td><td class="n" data-l="UB">1.108</td></tr>
+            <tr><td>Self-weight, φ′ = 40°, rough (N<sub>γ</sub> = 85.6, Martin)</td><td class="n" data-l="Ref.">1541</td><td class="n" data-l="LB">0.887</td><td class="n" data-l="UB">1.171</td></tr>
+            <tr><td>Crust: s<sub>u</sub> 100 to 0.5 m over s<sub>u</sub> 10, B = 2 m, rough (true load ≤ 110.7)</td><td class="n" data-l="Ref.">≤ 110.7</td><td class="n" data-l="LB">0.915</td><td class="n" data-l="UB">1.002</td></tr>
+            <tr><td>Inclined, undrained, H/(B s<sub>u</sub>) = 0.5 (Green 1954, V/(B s<sub>u</sub>) = 4.48)</td><td class="n" data-l="Ref.">448.4</td><td class="n" data-l="LB">0.993</td><td class="n" data-l="UB">1.014</td></tr>
+            <tr><td>Same, V held and H increased (sliding)</td><td class="n" data-l="Ref.">H = 100</td><td class="n" data-l="LB">0.947</td><td class="n" data-l="UB">1.085</td></tr>
+            <tr><td>Eccentric, undrained, e = 0.1B (Meyerhof effective width, 0.8 × 5.14 s<sub>u</sub>)</td><td class="n" data-l="Ref.">411.4</td><td class="n" data-l="LB">1.010</td><td class="n" data-l="UB">1.057</td></tr>
             <tr><td>Footing at the crest of a 30° undrained slope, 4 m high, B = 2 m, weightless (no closed form; bracket shown as N<sub>c</sub>)</td><td class="n" data-l="Ref.">–</td><td class="n" data-l="LB">4.06</td><td class="n" data-l="UB">4.13</td></tr>
+            <tr><td>Davis: c′ = 10, φ′ = 25°, ψ′ = 5°, weightless (c* N<sub>c</sub>(φ*))</td><td class="n" data-l="Ref.">176.4</td><td class="n" data-l="LB">0.976</td><td class="n" data-l="UB">1.022</td></tr>
+            <tr><td>Strength factor of safety at half the Prandtl load (exact 2.0)</td><td class="n" data-l="Ref.">2.0</td><td class="n" data-l="LB">0.990</td><td class="n" data-l="UB">1.013</td></tr>
+            <tr><td>Circular, rough, undrained, axisymmetric (N<sub>c</sub> = 6.05, Eason and Shield)</td><td class="n" data-l="Ref.">605</td><td class="n" data-l="LB">0.968</td><td class="n" data-l="UB">1.049</td></tr>
           </tbody>
         </table>
         </div>
@@ -360,16 +377,31 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
 
   const TYPES = [["strip", "Strip"], ["square", "Square"], ["rect", "Rectangular"], ["circle", "Circular"], ["mat", "Mat"], ["slab", "Slab"]];
   const QUAL = [["quick", "Quick"], ["std", "Standard"], ["fine", "Fine"]];
-  const QHINT = { quick: "Quick: about 20–40 s. Good for trying options.", std: "Standard: about 1–2 min. Tighter bounds.", fine: "Fine: about 2–5 min. Tightest bounds; uses the most memory." };
+  const QHINT = { quick: "Quick: about 20–40 s; a circular footing analysed axisymmetrically about 2–3 min. Good for trying options.", std: "Standard: about 2–7 min (circular, axisymmetric: about 5 min). Two adaptive mesh cycles and a finer yield surface; tighter bounds.", fine: "Fine: about 10–20 min (circular, axisymmetric: 10 min or more). Three adaptive mesh cycles; tightest bounds; uses the most memory." };
+  // nu: lifted (Ben-Tal and Nemirovski) yield polygon with 2^(nu+1) sides; adaptCycles: adaptive mesh cycles;
+  // feQuad: 6-node finite element upper bound (also run for frictional soil when feFrictional);
+  // ipmTol: a loose interior-point optimality tolerance is safe because a bound needs only a feasible point
   const QOPTS = {
-    quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false },
-    std: { p: 24, dloNodes: 420, targetElems: 1800 },
-    fine: { p: 24, dloNodes: 480, targetElems: 2600 }
+    quick: { p: 18, dloNodes: 260, targetElems: 1100, nTheta: 12, fanR0: 0.08, feAutoCombined: false, ipmTol: 1e-3 },
+    std: { p: 24, nu: 4, dloNodes: 420, targetElems: 1800, adaptCycles: 2, feQuad: true, feFrictional: true, ipmTol: 1e-3 },
+    fine: { p: 24, nu: 5, dloNodes: 480, targetElems: 2600, adaptCycles: 3, feQuad: true, feFrictional: true, ipmTol: 1e-3 }
+  };
+  // the axisymmetric solves are larger per element
+  const QAXI = {
+    quick: { p: 12, targetElems: 350, nTheta: 6, nf: 2, fanR0: 0.1, adaptCycles: 1, nu: 0 },
+    std: { p: 16, targetElems: 650, nTheta: 8, nf: 3, adaptCycles: 1, nu: 0 },
+    fine: { p: 18, targetElems: 1000, nTheta: 10, nf: 4, adaptCycles: 2, nu: 0 }
+  };
+  const LMODES = [["prop", "All loads together"], ["holdH", "Increase V, hold H"], ["slide", "Hold V, increase H"]];
+  const LHINT = {
+    prop: "H and e act across the width B; positive values point to the right, toward the slope when there is one. V, H and M = V·e are increased together; the factor of safety is on the whole load.",
+    holdH: "H is held at the value entered (for example wind or seismic load) while V, with M = V·e, is increased; the factor of safety is on V.",
+    slide: "V is held at the value entered (at eccentricity e) while H is increased to collapse: sliding capacity. The factor of safety is on H; pressures shown are H ÷ base area."
   };
   const LAYER_COLORS = ["#d9b77c", "#9fae7c", "#b08d6a", "#8f9fae", "#c5a3a0", "#a6b9b0"];
   // which quantity each top-level field holds ("load" depends on the footing type)
-  const FIELDS = { B: "len", L: "len", D: "len", P: "load", FS: "none", qs: "stress", wt: "len", Hl: "load", ec: "len", sd: "len", sh: "len", sa: "none" };
-  const LFIELDS = { bottom: "len", c: "stress", phi: "none", grad: "grad", gamma: "gam", gammaSat: "gam" };
+  const FIELDS = { B: "len", L: "len", D: "len", P: "load", FS: "none", qs: "stress", wt: "len", Hl: "load", ec: "len", sd: "len", sh: "len", sa: "none", rI: "none" };
+  const LFIELDS = { bottom: "len", c: "stress", phi: "none", grad: "grad", gamma: "gam", gammaSat: "gam", psi: "none", kt: "stress", rc: "none", re: "none" };
   const qOf = (k, ft) => (FIELDS[k] === "load" ? ((ft || S.ftype) === "strip" ? "forceLen" : "force") : FIELDS[k]);
 
   // example in US units, converted to SI on load
@@ -399,24 +431,38 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   }
   function save() { try { localStorage.setItem("bearing-bounds-v3", JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
   let S = loadState() || stateToSI(EXAMPLE_US);
+  // settings added after the first release get their defaults
+  S = Object.assign({ rI: 1, loadMode: "prop", axi: true, sfs: "off", sfan: false }, S);
   let result = null, view = "model", running = false;
   const touched = new Set(); let showAllErrors = false;
   const openLayers = new Set(); const layerNotes = {};
 
   /* ================= model from a state (SI) ================= */
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+  // the axisymmetric analysis applies to a circular footing under a central vertical load on level ground
+  const axiOn = (I) => I.ftype === "circle" && I.axi !== false && !I.hasSlope && (I.loadMode || "prop") === "prop" && !(I.Hl) && !(I.ec);
   function engineModel(I) {
     const layers = I.layers.map((L, i) => ({
       bottom: i === I.layers.length - 1 ? 1e9 : L.bottom, c: Math.max(0, L.c || 0), phi: L.drained ? Math.max(0, Math.min(50, L.phi || 0)) : 0,
-      gamma: L.gamma, gammaSat: L.gammaSat, suGrad: L.drained ? 0 : (L.grad || 0), undrained: !L.drained, name: L.name
+      gamma: L.gamma, gammaSat: L.gammaSat, suGrad: L.drained ? 0 : (L.grad || 0), undrained: !L.drained, name: L.name,
+      psi: L.drained && num(L.psi) != null ? Math.max(0, L.psi) : null, kt: num(L.kt) != null ? Math.max(0, L.kt) : null,
+      aniso: !L.drained && (num(L.rc) != null || num(L.re) != null) ? { rc: num(L.rc) != null ? L.rc : 1, re: num(L.re) != null ? L.re : 1 } : null
     }));
-    const tanA = I.P > 0 ? (I.Hl || 0) / I.P : 0;
-    return { B: I.B, D: I.D || 0, rough: I.rough, gammaW: GW, waterDepth: I.hasWT ? Math.max(0, I.wt) : null, surcharge: I.qs || 0, layers,
-      load: { tanA: tanA, e: I.ec || 0 }, slope: I.hasSlope ? { dist: Math.max(0, I.sd || 0), height: Math.max(0, I.sh || 0), angle: I.sa } : null };
+    // plane-strain loads per unit length: totals divided by area / B
+    const len = lengthOf(I), mode = I.loadMode || "prop";
+    const load = mode === "slide" ? { mode: "H", Vfix: (I.P || 0) / len, e: I.ec || 0 }
+      : mode === "holdH" ? { tanA: 0, e: I.ec || 0, Hfix: (I.Hl || 0) / len }
+      : { tanA: I.P > 0 ? (I.Hl || 0) / I.P : 0, e: I.ec || 0 };
+    return { B: I.B, D: I.D || 0, rough: I.rough, rInter: I.rough && num(I.rI) != null ? Math.max(0.01, Math.min(1, I.rI)) : null,
+      gammaW: GW, waterDepth: I.hasWT ? Math.max(0, I.wt) : null, surcharge: I.qs || 0, layers, load: load, axisym: axiOn(I),
+      slope: I.hasSlope ? { dist: Math.max(0, I.sd || 0), height: Math.max(0, I.sh || 0), angle: I.sa } : null };
   }
   // everything that changes the analysis (not the applied load size or the target FS)
   function runKey(I) {
-    const m = engineModel(I); m.load.tanA = Math.round(m.load.tanA * 1e9) / 1e9;
-    return JSON.stringify([m, I.ftype, ["rect", "mat", "slab"].includes(I.ftype) ? I.L : 0]);
+    const m = engineModel(I); if (m.load.tanA != null) m.load.tanA = Math.round(m.load.tanA * 1e9) / 1e9;
+    // the strength factor of safety depends on the size of the applied load
+    const sf = I.sfs === "load" ? [I.P, I.Hl, I.FS] : I.sfs === "slope" && I.hasSlope ? ["slope"] : [];
+    return JSON.stringify([m, I.ftype, ["rect", "mat", "slab"].includes(I.ftype) ? I.L : 0, sf, !!(I.sfan && I.hasSlope)]);
   }
   const isStale = () => !!result && runKey(S) !== result.key;
   // length that turns a per-unit-length strip load into a total: area / B
@@ -429,6 +475,8 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   }
   const area = (I) => I.B * lengthOf(I);
   const appliedPressure = (I) => (I.P || 0) / area(I);
+  // the quantity whose factor of safety is reported: vertical pressure, or H / area when sliding
+  const appliedQ = (I) => ((I.loadMode || "prop") === "slide" ? Math.abs(I.Hl || 0) : (I.P || 0)) / area(I);
   function prepLayers(m) { let top = 0; return m.layers.map((l) => { const o = Object.assign({}, l, { top }); top = l.bottom; return o; }); }
   function shapeInfo(I, q0) {
     const m = engineModel(I), lay = FELA.soilAt(m, (m.D || 0) + 1e-6);
@@ -450,8 +498,14 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     if (!(I.FS >= 1)) add("FS", "Use a target factor of safety of 1 or more.");
     if (!(I.P >= 0)) add("P", "Enter a vertical load of zero or more.");
     if (I.B > 0 && Math.abs(I.ec || 0) >= 0.475 * I.B) add("ec", "The eccentricity must be smaller than 0.475 B (" + len(0.475 * I.B) + ").");
-    if ((I.Hl || 0) !== 0 && !(I.P > 0)) add("P", "Enter a vertical load: H and e are applied in proportion to it.");
-    if ((I.Hl || 0) !== 0 && !I.rough) add("Hl", "A smooth base cannot carry horizontal load. Tick Rough base or set H to zero.");
+    const mode = I.loadMode || "prop";
+    if (mode === "prop" && (I.Hl || 0) !== 0 && !(I.P > 0)) add("P", "Enter a vertical load: H and e are applied in proportion to it.");
+    if (((I.Hl || 0) !== 0 || mode === "slide") && !I.rough) add("Hl", "A smooth base cannot carry horizontal load. Tick Rough base or set H to zero.");
+    if (mode === "slide" && !((I.Hl || 0) > 0)) add("Hl", "Enter a positive horizontal load: its factor of safety is computed with V held.");
+    if (I.rough && !(I.rI > 0 && I.rI <= 1)) add("rI", "Use an interface factor greater than 0 and at most 1.");
+    if (I.ftype === "circle" && I.axi !== false && !axiOn(I)) add("axi", "The axisymmetric analysis needs a central vertical load on level ground (H = 0, e = 0, no slope, all loads together). Untick it to use the plane-strain estimate.");
+    if (I.sfs === "load" && !(appliedQ(I) > 0)) add("sfs", "Enter the applied load: the strength factor of safety is for that load.");
+    if (I.sfs === "slope" && !I.hasSlope) add("sfs", "There is no slope. Choose another option or add the slope.");
     if (!(I.qs >= 0)) add("qs", "The surcharge cannot be negative.");
     if (I.hasSlope) {
       if (!(I.sh > 0)) add("sh", "Enter a slope height greater than zero, or untick the slope.");
@@ -469,6 +523,12 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       if (L.drained && !(L.phi > 0) && !(L.c > 0)) add("lp" + i, "Give this layer some strength: c′ or φ′.");
       if (L.drained && !(L.phi >= 0 && L.phi <= 50)) add("lp" + i, "Use φ′ between 0 and 50°.");
       if (!L.drained && !(L.c > 0)) add("lc" + i, "Enter an undrained strength.");
+      if (!L.drained && L.grad < 0) add("lg" + i, "The strength cannot decrease with depth; use zero or more.");
+      if (L.drained && num(L.psi) != null && !(L.psi >= 0 && L.psi <= (L.phi || 0))) add("lpsi" + i, "Use a dilation angle between 0 and φ′, or leave it blank.");
+      if (num(L.kt) != null && !(L.kt >= 0)) add("lkt" + i, "The tensile strength cannot be negative.");
+      if (!L.drained && num(L.rc) != null && !(L.rc >= 0.3 && L.rc <= 3)) add("lrc" + i, "Use a ratio between 0.3 and 3, or leave it blank.");
+      if (!L.drained && num(L.re) != null && !(L.re >= 0.2 && L.re <= 3)) add("lre" + i, "Use a ratio between 0.2 and 3, or leave it blank.");
+      if (I.ftype === "circle" && axiOn(I) && (num(L.kt) != null || (!L.drained && (num(L.rc) != null || num(L.re) != null)))) add(num(L.kt) != null ? "lkt" + i : "lrc" + i, "Tension cut-off and anisotropic strength are not available in the axisymmetric analysis. Clear them or untick it.");
       if (!last) top = L.bottom;
     });
     return E;
@@ -498,7 +558,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     items.forEach(([v, t]) => {
       const b = document.createElement("button");
       b.type = "button"; b.textContent = t; b.setAttribute("aria-pressed", S[key] === v);
-      b.addEventListener("click", () => { if (key === "ftype") switchType(v); else { S[key] = v; save(); renderForm(); } });
+      b.addEventListener("click", () => { if (key === "ftype") switchType(v); else { S[key] = v; save(); renderForm(); afterInput(); } });
       el.appendChild(b);
     });
   }
@@ -543,13 +603,19 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     $("hasSlope").checked = S.hasSlope; $("slopeRow").hidden = !S.hasSlope;
     Object.keys(FIELDS).forEach((k) => setField(k, S[k], qOf(k)));
     $("rough").checked = S.rough; $("hasWT").checked = S.hasWT; $("wrap-wt").hidden = !S.hasWT; $("feub").checked = S.feub;
+    $("wrap-rI").hidden = !S.rough; $("hint-rI").hidden = !S.rough;
+    $("wrap-axi").hidden = t !== "circle"; $("axi").checked = S.axi !== false;
+    buildSeg($("lmode"), LMODES, "loadMode"); $("lmodeHint").textContent = LHINT[S.loadMode || "prop"];
+    $("lbl-H").textContent = (S.loadMode === "slide" ? "Applied horizontal load H" : S.loadMode === "holdH" ? "Horizontal load H (held)" : "Horizontal load H") + " (" + unit(qOf("Hl")) + ")";
+    $("lbl-P").textContent = (S.loadMode === "slide" ? "Vertical load V (held)" : "Vertical load V") + " (" + unit(qOf("P")) + ")";
+    $("sfs").value = S.sfs || "off"; $("sfan").checked = !!S.sfan; $("wrap-sfan").hidden = !S.hasSlope;
     renderLayers();
     showErrors(false);
   }
   function layerSummary(L, i) {
     const last = i === S.layers.length - 1, top = i === 0 ? 0 : S.layers[i - 1].bottom;
     const depth = last ? "below " + fmtLen(top) + " " + unit("len") : fmtLen(top) + "–" + fmtLen(L.bottom) + " " + unit("len");
-    const str = L.drained ? `φ′ ${fmt(L.phi, 1)}°, c′ ${fmt(fromSI(L.c, "stress"), 0)}` : `su ${fmt(fromSI(L.c, "stress"), 0)}${L.grad ? " + " + fmt(fromSI(L.grad, "grad"), 1) + "/" + unit("len") : ""}`;
+    const str = (L.drained ? `φ′ ${fmt(L.phi, 1)}°, c′ ${fmt(fromSI(L.c, "stress"), 0)}` + (num(L.psi) != null ? `, ψ′ ${fmt(L.psi, 1)}°` : "") : `su ${fmt(fromSI(L.c, "stress"), 0)}${L.grad ? " + " + fmt(fromSI(L.grad, "grad"), 1) + "/" + unit("len") : ""}` + (num(L.rc) != null || num(L.re) != null ? " (anisotropic)" : "")) + (num(L.kt) != null ? ", cut-off" : "");
     return `${depth} · ${str} · γ ${fmt(fromSI(L.gamma, "gam"), 1)}`;
   }
   function renderLayers() {
@@ -578,6 +644,13 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
                         : `<label class="f"><span>sᵤ increase (${unit("grad")})</span><input id="lg${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("grad")}"></label>`}
             <label class="f"><span>γ (${unit("gam")})</span><input id="lw${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("gamma")}"></label>
           </div>
+          <div class="row three">
+            ${L.drained ? `<label class="f"><span>Dilation ψ′ (deg)</span><input id="lpsi${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="= φ′" value="${v("psi")}"></label>`
+                        : `<label class="f"><span>sᵤ,c ÷ sᵤ</span><input id="lrc${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("rc")}"></label>
+                           <label class="f"><span>sᵤ,e ÷ sᵤ</span><input id="lre${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="1" value="${v("re")}"></label>`}
+            <label class="f"><span>Tensile limit (${unit("stress")})</span><input id="lkt${i}" type="number" step="any" min="0" inputmode="decimal" placeholder="none" value="${v("kt")}"></label>
+          </div>
+          <p class="hint">${L.drained ? "Leave ψ′ blank for associated flow. A smaller ψ′ uses Davis's reduced strength (c* = β c′, tan φ* = β tan φ′), an estimate of the effect of non-associated flow." : "sᵤ is the plane-strain (direct simple shear) strength; triaxial compression sᵤ overestimates plane-strain capacity. The ratios sᵤ,c ÷ sᵤ (triaxial compression) and sᵤ,e ÷ sᵤ (triaxial extension), if given, make the strength anisotropic (Davis and Christian ellipse)."} The tensile limit (a tension cut-off) caps the major principal stress to the value given (0 = no tension); blank means none.</p>
           <div class="lfoot">
             <label class="f" style="flex:1"><span>γ<sub>sat</sub> (${unit("gam")})</span><input id="ls${i}" type="number" step="any" min="0" inputmode="decimal" value="${v("gammaSat")}"></label>
             ${S.layers.length > 1 ? `<button type="button" class="icon-btn" data-del="${i}">Remove layer</button>` : ""}
@@ -599,6 +672,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       };
       bind("ln" + i, "name"); bind("lb" + i, "bottom"); bind("lc" + i, "c"); bind("lp" + i, "phi");
       bind("lg" + i, "grad"); bind("lw" + i, "gamma"); bind("ls" + i, "gammaSat");
+      bind("lpsi" + i, "psi"); bind("lkt" + i, "kt"); bind("lrc" + i, "rc"); bind("lre" + i, "re");
       $("ld" + i).addEventListener("change", (e) => { L.drained = e.target.value === "1"; if (!L.drained) L.phi = 0; else if (!L.phi) L.phi = 30; save(); renderLayers(); afterInput(); });
     });
     box.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => {
@@ -618,8 +692,11 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     });
     $(k).addEventListener("focusout", () => { touched.add(k); showErrors(false); });
   });
-  $("hasSlope").addEventListener("change", (e) => { S.hasSlope = e.target.checked; $("slopeRow").hidden = !S.hasSlope; save(); afterInput(); });
-  $("rough").addEventListener("change", (e) => { S.rough = e.target.checked; save(); afterInput(); });
+  $("hasSlope").addEventListener("change", (e) => { S.hasSlope = e.target.checked; $("slopeRow").hidden = !S.hasSlope; $("wrap-sfan").hidden = !S.hasSlope; save(); afterInput(); });
+  $("rough").addEventListener("change", (e) => { S.rough = e.target.checked; $("wrap-rI").hidden = !S.rough; $("hint-rI").hidden = !S.rough; save(); afterInput(); });
+  $("axi").addEventListener("change", (e) => { S.axi = e.target.checked; save(); afterInput(); });
+  $("sfs").addEventListener("change", (e) => { S.sfs = e.target.value; touched.add("sfs"); save(); afterInput(); });
+  $("sfan").addEventListener("change", (e) => { S.sfan = e.target.checked; save(); afterInput(); });
   $("hasWT").addEventListener("change", (e) => { S.hasWT = e.target.checked; $("wrap-wt").hidden = !S.hasWT; save(); afterInput(); });
   $("feub").addEventListener("change", (e) => { S.feub = e.target.checked; save(); });
   $("addLayer").addEventListener("click", () => {
@@ -665,26 +742,42 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       }
       return { nx: nx, ny: ny, g: grid, vmax: vmax, xL: xL, W: W, H: H, arrows: arrows, amax: amax, cell: Math.min(W / ax, H / ay) };
     }
+    // a finite element solve in a child worker of its own (own WebAssembly instance), discarded afterwards
+    // (the child script is a Blob URL made here: a page opened from a file has origin "null", and a worker
+    // cannot start a child from the page's own Blob URL then)
+    let childUrl = null;
+    function solveInChild(job, bytes, src) {
+      return new Promise((resolve, reject) => {
+        if (!childUrl) childUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+        const w = new Worker(childUrl);
+        w.onmessage = (ev) => { w.terminate(); if (ev.data.type === "job-done") resolve(ev.data.r); else reject(new Error(ev.data.message)); };
+        w.onerror = (e) => { w.terminate(); if (e && e.preventDefault) e.preventDefault(); reject(new Error((e && e.message) || "child worker failed")); };
+        const b = bytes.slice();
+        w.postMessage({ job: job, bytes: b }, [b.buffer]);
+      });
+    }
     self.onmessage = async (ev) => {
       const d = ev.data;
       try {
         const highs = await Module({ instantiateWasm: (imports, done) => { WebAssembly.instantiate(d.bytes, imports).then((r) => done(r.instance)); return {}; } });
+        if (d.job) { self.postMessage({ type: "job-done", r: FELA.runJob(highs, d.job) }); return; }
         const opts = Object.assign({}, d.opts, { onProgress: (t, f) => self.postMessage({ type: "progress", t: t, f: f }) });
+        if (typeof Worker !== "undefined" && d.src) opts.parallel = (jobs) => Promise.all(jobs.map((j) => solveInChild(j, d.bytes, d.src)));
         const r = await FELA.analyse(highs, d.model, opts);
         r.velGrid = velocityGrid(r);
         delete r.model.geo;
         if (r.mats) r.mats = null;
         self.postMessage({ type: "done", r: r });
       } catch (e) {
-        self.postMessage({ type: "error", message: e && e.message ? e.message : String(e) });
+        self.postMessage({ type: d && d.job ? "job-error" : "error", message: e && e.message ? e.message : String(e) });
       }
     };
   `;
-  let workerUrl = null, worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
+  let workerUrl = null, workerSrc = "", worker = null, wasmBytes = null, timer = null, t0 = 0, stepText = "";
   function makeWorker() {
     if (!workerUrl) {
-      const src = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
-      workerUrl = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+      workerSrc = $("src-highs").textContent + "\n;\n" + $("src-engine").textContent + "\n;\n" + WORKER_MAIN;
+      workerUrl = URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
     }
     return new Worker(workerUrl);
   }
@@ -701,11 +794,15 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   }
   // plain-language steps; the count depends on whether the finite element upper bound runs
   function stepOf(t, I) {
-    const feLikely = I.feub || I.layers.length > 1 || ((I.hasSlope || I.Hl || I.ec) && I.quality !== "quick");
-    const n = feLikely ? 3 : 2;
+    const feLikely = I.feub || I.layers.length > 1 || axiOn(I) || (I.quality !== "quick" && (I.hasSlope || I.Hl || I.ec || I.layers.some((L) => L.drained && L.phi > 0)));
+    const sf = I.sfs === "load" || (I.sfs === "slope" && I.hasSlope);
+    const n = (feLikely ? 3 : 2) + (sf ? 1 : 0), cyc = (t.match(/cycle (\d+ of \d+)/) || [])[1];
+    const tail = cyc ? ", mesh cycle " + cyc : "";
     if (/discontinuity/i.test(t)) return { k: 1, n, txt: "finding the collapse mechanism (upper bound)" };
-    if (/Lower bound/i.test(t)) return { k: 2, n, txt: "building a safe stress field (lower bound)" };
-    if (/finite elements/i.test(t)) return { k: 3, n: 3, txt: "checking the upper bound with finite elements" };
+    if (/in parallel/i.test(t)) return { k: 2, n, txt: "safe stress field and finite element upper bound, side by side" + tail };
+    if (/Lower bound/i.test(t)) return { k: 2, n, txt: "building a safe stress field (lower bound)" + tail };
+    if (/finite elements/i.test(t)) return { k: 3, n, txt: "checking the upper bound with finite elements" + tail };
+    if (/strength/i.test(t)) return { k: n, n, txt: "factor of safety on strength" + ((t.match(/F = [0-9.]+/) || [])[0] ? " (trying " + t.match(/F = [0-9.]+/)[0] + ")" : "") };
     return { k: 1, n, txt: t };
   }
   async function run(ev) {
@@ -723,7 +820,13 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     }
     const I = JSON.parse(JSON.stringify(S));
     const m = engineModel(I);
-    const opts = Object.assign({}, QOPTS[I.quality], { feUpper: I.feub ? true : undefined });
+    const opts = Object.assign({}, QOPTS[I.quality], m.axisym ? QAXI[I.quality] : {}, { feUpper: I.feub ? true : undefined, slopeFans: !!(I.sfan && I.hasSlope) });
+    if (!opts.nu) delete opts.nu;
+    if (I.sfs === "load" || (I.sfs === "slope" && I.hasSlope)) {
+      // the applied load as the multiplier the engine increases: V (or H when sliding) per unit length, or the total for an axisymmetric run
+      const len = lengthOf(I), tgt = I.sfs === "slope" ? 0 : m.axisym ? I.P : (I.loadMode === "slide" ? Math.abs(I.Hl || 0) : I.P) / len;
+      opts.strength = { target: tgt };
+    }
     try { worker = makeWorker(); }
     catch (e) { setStatus("This browser would not start a background worker for the solver: " + (e && e.message ? e.message : e), true); return; }
     stepText = "Starting the solver"; setRunning(true); $("bar").style.width = "3%"; setStatus(stepText);
@@ -759,7 +862,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       setStatus("The solver ran out of memory or crashed" + (e && e.message ? " (" + e.message + ")" : "") + ". Use the Quick or Standard mesh.", true);
     };
     const bytes = wasmBytes.slice();
-    worker.postMessage({ bytes: bytes, model: m, opts: opts }, [bytes.buffer]);
+    worker.postMessage({ bytes: bytes, model: m, opts: opts, src: workerSrc }, [bytes.buffer]);
   }
   const reduceMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   $("form").addEventListener("submit", run);
@@ -768,9 +871,11 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   /* ================= results ================= */
   function bounds() {
     if (!result) return null;
-    const I = result.inputs, sh = shapeInfo(I, result.model.q0);
-    const lb = result.best.lb, ub = result.best.ub, uB = result.uBase || 0;
-    return { I, lb, ub, uB, lbS: lb * sh.ratio, ubS: ub * sh.ratio, ratio: sh.ratio, sh, q0: result.model.q0, classical: sh.c.qult + uB };
+    const I = result.inputs, sh = shapeInfo(I, result.model.q0), best = result.best, slide = best.mode === "H";
+    // the reported quantity: gross vertical pressure, or H / area when sliding (no shape factor for H)
+    const lb = slide ? best.Hlb / I.B : best.lb, ub = slide ? best.Hub / I.B : best.ub, uB = result.uBase || 0;
+    const ratio = result.axisym || slide ? 1 : sh.ratio;
+    return { I, lb, ub, uB, lbS: lb * ratio, ubS: ub * ratio, ratio: ratio, sh, slide, q0: result.model.q0, classical: slide ? NaN : sh.c.qult + uB };
   }
   function verdictOf(b, qa, fs) {
     if (!(qa > 0)) return ["idle", "No load entered"];
@@ -783,15 +888,15 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     $("summary").classList.toggle("is-stale", stale);
     $("staleNote").hidden = !stale || running;
     document.querySelectorAll(".viewer, .cols").forEach((n) => n.classList.toggle("results-dim", stale || running));
-    const qa = appliedPressure(S), fs = S.FS > 0 ? S.FS : 3;
-    $("fApp").textContent = fmtP(qa); $("uApp").textContent = unit("stress") + (S.ftype === "strip" ? ", from V ÷ B" : ", from V ÷ area");
+    const qa = appliedQ(S), fs = S.FS > 0 ? S.FS : 3, slideS = S.loadMode === "slide";
+    $("fApp").textContent = fmtP(qa); $("uApp").textContent = unit("stress") + (slideS ? ", from H ÷ " + (S.ftype === "strip" ? "B" : "area") : S.ftype === "strip" ? ", from V ÷ B" : ", from V ÷ area");
     if (running) { V.className = "pill run"; V.textContent = "Running…"; RV.className = "runverdict idle"; RV.textContent = ""; }
     if (!b) {
       ["fLB", "fUB", "fAll"].forEach((k) => ($(k).textContent = "–"));
       ["uLB", "uUB", "uAll"].forEach((k) => ($(k).textContent = ""));
       if (!running) { V.className = "pill idle"; V.textContent = "Not yet run"; }
       $("answer").innerHTML = `<span class="sub">Press Run limit analysis to compute the factor of safety. ${QHINT[S.quality]}</span>`;
-      $("classicWhy").textContent = ""; $("sumFoot").textContent = "";
+      $("classicWhy").textContent = ""; $("sumFoot").textContent = ""; $("sumMean").textContent = ""; $("sumSfs").textContent = "";
       drawBar();
       return;
     }
@@ -808,12 +913,18 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       if (!running) { V.className = "pill " + cls; V.textContent = txt; }
       const fsv = qa > 0 ? b.lbS / qa : NaN;
       $("answer").innerHTML = qa > 0
-        ? `<span class="lab">Factor of safety on the lower bound</span><span class="big" style="color:var(--${cls === "ok" ? "good" : cls === "warn" ? "warn" : "bad"})">${fmt(fsv, 2)}</span><span class="sub">target ${fmt(fs, 1)} · on the upper bound ${fmt(b.ubS / qa, 2)}</span>`
+        ? `<span class="lab">Factor of safety${b.slide ? " on H" : result.best.mode === "V" && (result.best.fix[1] || result.best.fix[2]) ? " on V" : ""} on the lower bound</span><span class="big" style="color:var(--${cls === "ok" ? "good" : cls === "warn" ? "warn" : "bad"})">${fmt(fsv, 2)}</span><span class="sub">target ${fmt(fs, 1)} · on the upper bound ${fmt(b.ubS / qa, 2)}</span>`
         : `<span class="sub">Enter a vertical load to get the factor of safety. The collapse pressure is below.</span>`;
       RV.className = "runverdict " + (running ? "idle" : cls); RV.textContent = running ? "" : (qa > 0 ? "FS " + fmt(fsv, 2) + " · " + txt.replace("Meets target FS", "meets target").replace("Below target FS", "below target").replace("Inside the bound gap", "inside bound gap") : "");
     }
-    $("sumFoot").textContent = "Gross pressures on the footing base" + (result.sym ? "" : " (vertical component at collapse, V ÷ area, with H and M increased in proportion)") +
-      (strip ? ", from plane-strain analysis." : `, from plane-strain analysis × ${fmt(b.ratio, 3)} shape adjustment for a ${TYPES.find((t) => t[0] === I.ftype)[1].toLowerCase()} footing (an estimate, not a rigorous bound).`);
+    const modeTxt = b.slide ? " (horizontal load at collapse ÷ base area, with V held)" : result.best.fix[1] || result.best.fix[2] ? " (vertical component at collapse, V ÷ area, with H held)" : result.sym ? "" : " (vertical component at collapse, V ÷ area, with H and M increased in proportion)";
+    $("sumFoot").textContent = (b.slide ? "Horizontal capacity" : "Gross pressures on the footing base") + modeTxt +
+      (result.axisym ? ", from axisymmetric analysis: rigorous bounds for the circular footing." : strip || b.slide ? ", from plane-strain analysis." : `, from plane-strain analysis × ${fmt(b.ratio, 3)} shape adjustment for a ${TYPES.find((t) => t[0] === I.ftype)[1].toLowerCase()} footing (an estimate, not a rigorous bound).`) +
+      (I.layers.some((L) => L.drained && num(L.psi) != null && L.psi < L.phi) ? " Davis reduced strengths are used for the layers with ψ′ < φ′ (non-associated flow; an estimate of that effect)." : "");
+    const mean = 0.5 * (b.lbS + b.ubS), half = 0.5 * (b.ubS - b.lbS);
+    $("sumMean").textContent = isFinite(mean) && b.lbS > 0 ? `Mean of the bounds ${fmtP(mean)} ± ${fmtP(half)} ${unit("stress")} (± ${fmt(half / mean * 100, 1)}%). This is an estimate, not a bound; design on the lower bound. In cohesionless soil with self-weight the upper bound is usually further from the true value, so the mean tends to be high.` : "";
+    const sr = result.strength;
+    $("sumSfs").textContent = sr ? `Factor of safety on soil strength${sr.target === 0 ? " for the slope alone" : ""}: ${fmt(sr.fsLb, 2)} (lower bound) to ${isFinite(sr.fsUb) ? fmt(sr.fsUb, 2) : "–"} (upper bound); c′, sᵤ and tan φ′ divided by F.` + (!result.axisym && !b.slide && b.ratio !== 1 && sr.target !== 0 ? " Plane-strain value for the load per unit length; the shape adjustment is not applied." : "") : "";
     $("classicWhy").textContent = classicalWhy(b);
     drawBar();
     renderDetail(b);
@@ -844,23 +955,27 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   function renderDetail(b) {
     const r = result, I = b.I, u = unit("stress"), strip = I.ftype === "strip";
     const gap = (b.ub - b.lb) / (0.5 * (b.ub + b.lb)) * 100;
+    const kind = r.axisym ? "Axisymmetric" : "Plane-strain";
     const rows = [
-      ["Plane-strain lower bound (before shape factor)", fmtP(b.lb) + " " + u],
-      ["Plane-strain upper bound (before shape factor)", fmtP(b.ub) + " " + u],
-      ["Upper bound from", r.best.ubMethod === "Finite element" ? "finite elements" : "discontinuity layout"],
-      ["Collapse load per unit length (LB)", "V " + fmtF(r.best.Vlb, "forceLen") + (r.best.tanA ? ", H " + fmtF(r.best.Vlb * r.best.tanA, "forceLen") : "") + (r.best.e ? ", M " + fmtF(r.best.Vlb * r.best.e, "moment") : "")],
+      [kind + " lower bound" + (r.axisym || b.slide ? "" : " (before shape factor)"), fmtP(b.lb) + " " + u],
+      [kind + " upper bound" + (r.axisym || b.slide ? "" : " (before shape factor)"), fmtP(b.ub) + " " + u],
+      ["Upper bound from", r.best.ubMethod === "Finite element" ? (r.ub && r.ub.quad ? "finite elements (6-node)" : "finite elements") : "discontinuity layout"],
+      [r.axisym ? "Collapse load (LB)" : "Collapse load per unit length (LB)", r.axisym ? "V " + fmtF(r.best.Vlb, "force") : "V " + fmtF(r.best.Vlb, "forceLen") + (r.best.Hlb ? ", H " + fmtF(r.best.Hlb, "forceLen") : "") + (r.best.Mlb ? ", M " + fmtF(r.best.Mlb, "moment") : "")],
       ["Footing motion at collapse", motionText(r.best.mech)],
       ["Bound gap (± about the mean)", fmt(gap / 2, 1) + " %"],
+      ["Mean of the bounds (estimate, not a bound)", fmtP(0.5 * (b.lbS + b.ubS)) + " " + u],
       ["Shape adjustment ratio", strip ? "1 (strip)" : fmt(b.ratio, 3)],
       ["Effective overburden at base, q′₀", fmtP(b.q0) + " " + u],
       ["Pore pressure at base (included in gross)", fmtP(b.uB) + " " + u],
-      ["Lower-bound mesh", fmt(r.mesh.nE) + " triangles"],
+      ["Lower-bound mesh", fmt(r.mesh.nE) + " triangles" + (r.cycles && r.cycles.length > 1 ? ", after " + r.cycles.length + " adaptive cycles (" + r.cycles.map((c) => fmt(c.nE)).join(" → ") + ")" : "")],
       ["Upper-bound layout", fmt(r.dlo.nodes.length) + " nodes, " + fmt(r.dlo.nLines) + " lines"],
-      ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s"],
-      ["Discontinuity layout UB", fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)")]
+      ["Solve time", "LB " + fmt(r.lb.time, 1) + " s, UB " + fmt(r.dlo.time + (r.ub ? r.ub.time : 0), 1) + " s" + (r.parallelUsed && !r.parallelFailed ? "; finite element bounds solved in parallel" : r.parallelFailed ? "; solved one after the other (parallel workers unavailable: " + r.parallelFailed + ")" : "")],
+      ["Discontinuity layout UB", r.axisym ? "plane-strain mechanism, used only to size the model" : fmtP(r.dlo.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.dlo.valid ? "" : " (rejected)")]
     ];
-    if (r.ub) rows.push(["Finite element UB", fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" ? ", run for the " + r.feReason : "")]);
-    rows.push(["Analysed domain" + (r.sym ? " (half section)" : ""), fmtLen(r.model.xR - r.model.xL) + " × " + fmtLen(r.model.H) + " " + unit("len")]);
+    if (r.ub) rows.push(["Finite element UB", (r.axisym ? fmtP(r.ub.qu) : fmtP(r.ub.V * (r.sym ? 2 : 1) / I.B)) + " " + u + (r.ub.valid ? "" : " (rejected)") + (r.feReason && r.feReason !== "requested" && !r.axisym ? ", run for the " + r.feReason : "")]);
+    if (r.strength) rows.push(["Factor of safety on strength", fmt(r.strength.fsLb, 3) + " to " + (isFinite(r.strength.fsUb) ? fmt(r.strength.fsUb, 3) : "–") + " (" + r.strength.evals.length + " extra solves)"]);
+    if (I.rough && num(I.rI) != null && I.rI < 1) rows.push(["Base interface factor R", fmt(I.rI, 2)]);
+    rows.push(["Analysed domain" + (r.axisym ? " (radius × depth)" : r.sym ? " (half section)" : ""), fmtLen(r.model.xR - r.model.xL) + " × " + fmtLen(r.model.H) + " " + unit("len")]);
     $("detail").innerHTML = "<tbody>" + rows.map((x) => `<tr><td>${x[0]}</td><td class="n">${x[1]}</td></tr>`).join("") + "</tbody>";
     const c = b.sh.c, lay = b.sh.lay;
     $("classic").innerHTML = `<table><thead><tr><th>Factor</th><th class="n sym">c</th><th class="n sym">q</th><th class="n sym">γ</th></tr></thead><tbody>
@@ -876,15 +991,16 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   }
   function buildCopy(b) {
     const I = b.I, u = unit("stress"), len = unit("len");
-    const qa = appliedPressure(S), fs = S.FS;
+    const qa = appliedQ(S), fs = S.FS;
     const lines = [
       `Bearing Bounds summary (${TYPES.find((t) => t[0] === I.ftype)[1]} footing, B = ${fmtLen(I.B)} ${len}${["rect", "mat", "slab"].includes(I.ftype) ? ", L = " + fmtLen(I.L) + " " + len : ""}, D = ${fmtLen(I.D)} ${len}, ${I.rough ? "rough" : "smooth"} base)`,
-      `Factor of safety on lower bound: ${fmt(b.lbS / qa, 2)} (target ${fmt(fs, 1)}); on upper bound: ${fmt(b.ubS / qa, 2)}`,
+      `Factor of safety${b.slide ? " on H" : ""} on lower bound: ${fmt(b.lbS / qa, 2)} (target ${fmt(fs, 1)}); on upper bound: ${fmt(b.ubS / qa, 2)}`,
       `Collapse pressure (gross): lower bound ${fmtP(b.lbS)} ${u}, upper bound ${fmtP(b.ubS)} ${u}; allowable (LB / FS) ${fmtP(b.lbS / fs)} ${u}; applied ${fmtP(qa)} ${u}`,
       `Plane-strain bounds ${fmtP(b.lb)} to ${fmtP(b.ub)} ${u}; shape ratio ${fmt(b.ratio, 3)}; pore pressure at base ${fmtP(b.uB)} ${u}`,
       `Soil: ` + I.layers.map((L, k) => `${L.name} ${layerSummaryFor(I, L, k)}`).join("; "),
-      `Load: V ${tidyDisp(S.P, qOf("P"))} ${unit(qOf("P"))}, H ${tidyDisp(I.Hl || 0, qOf("Hl", I.ftype))} ${unit(qOf("Hl", I.ftype))}, e ${fmtLen(I.ec || 0)} ${len}, increased in proportion. Ground: ${I.hasSlope ? `slope ${I.sa}°, height ${fmtLen(I.sh)} ${len}, crest ${fmtLen(I.sd)} ${len} from footing edge` : "level"}. Water table: ${I.hasWT ? fmtLen(I.wt) + " " + len : "none"}.`,
-      `Method: finite element limit analysis lower bound, discontinuity layout optimisation upper bound, plane strain; ${I.quality} mesh.`
+      `Load: V ${tidyDisp(S.P, qOf("P"))} ${unit(qOf("P"))}, H ${tidyDisp(I.Hl || 0, qOf("Hl", I.ftype))} ${unit(qOf("Hl", I.ftype))}, e ${fmtLen(I.ec || 0)} ${len}; ${LMODES.find((m) => m[0] === (I.loadMode || "prop"))[1].toLowerCase()}. Ground: ${I.hasSlope ? `slope ${I.sa}°, height ${fmtLen(I.sh)} ${len}, crest ${fmtLen(I.sd)} ${len} from footing edge` : "level"}. Water table: ${I.hasWT ? fmtLen(I.wt) + " " + len : "none"}.` + (I.rough && I.rI < 1 ? ` Base interface factor R = ${fmt(I.rI, 2)}.` : ""),
+      `Mean of the bounds (estimate, not a bound): ${fmtP(0.5 * (b.lbS + b.ubS))} ± ${fmtP(0.5 * (b.ubS - b.lbS))} ${u}.` + (result.strength ? ` Factor of safety on strength: ${fmt(result.strength.fsLb, 2)} to ${fmt(result.strength.fsUb, 2)}.` : ""),
+      `Method: finite element limit analysis lower bound, ${result.axisym ? "axisymmetric finite element upper bound; rigorous for the circular footing" : "discontinuity layout optimisation and finite element upper bounds, plane strain"}; ${I.quality} mesh.`
     ];
     $("copyTxt").value = lines.join("\n");
   }
@@ -908,12 +1024,12 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     let failed = false;
     const lab = (name, v) => (short ? name : name + " " + fmtP(v));
     svg.setAttribute("viewBox", `0 0 ${w} ${Hh}`);
-    const b = bounds(), qa = appliedPressure(S);
+    const b = bounds(), qa = appliedQ(S);
     const font = `font-size="12" font-family="Barlow, sans-serif"`;
     if (!b) { svg.innerHTML = `<text x="0" y="34" fill="${css("--muted")}" ${font}>The collapse pressure range and your applied pressure will plot here.</text>`; return; }
     const fs = S.FS > 0 ? S.FS : 3, c = b.classical, target = qa * fs;
     const core = Math.max(b.ubS || 0, b.lbS || 0);
-    const cOff = c > 1.6 * core, tOff = target > 2.5 * Math.max(core, cOff ? 0 : c);
+    const cOff = !(c > 0) || c > 1.6 * core, tOff = target > 2.5 * Math.max(core, cOff ? 0 : c);
     const vals = [b.lbS, b.ubS].concat(cOff ? [] : [c]).concat(tOff || !(qa > 0) ? [] : [target]).filter((v) => v > 0);
     const right = cOff || tOff ? w - 26 : w - 8;
     const xmax = Math.max(...vals) * 1.08, X = (v) => Math.min(right, 8 + (right - 8) * v / xmax);
@@ -955,7 +1071,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       labels += place(X(c), lab("classical", c), css("--muted"), "above");
     }
     const offs = [];
-    if (cOff) offs.push([lab("classical", c), css("--muted")]);
+    if (cOff && c > 0) offs.push([lab("classical", c), css("--muted")]);
     if (qa > 0 && tOff) offs.push([lab("FS × applied", target), css("--bad")]);
     if (offs.length) {
       h += `<path d="M${w - 18} ${yT - 6} L${w - 8} ${yT} L${w - 18} ${yT + 6} Z" fill="${offs[offs.length - 1][1]}"/>`;
@@ -1190,7 +1306,7 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
   let animT = 0, animPlaying = false, animRaf = 0, animLast = 0;
   const ease = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
   function animState(I) {
-    const b = bounds(), qa = appliedPressure(isStale() ? result.inputs : S), fs = S.FS > 0 ? S.FS : 3;
+    const b = bounds(), qa = appliedQ(isStale() ? result.inputs : S), fs = S.FS > 0 ? S.FS : 3;
     const f = (result.dlo && result.dlo.footing) || { u: 0, v: -1, w: 0 };
     const t = animT;
     let q, stage, d = 0;
@@ -1365,8 +1481,9 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
       const st = css("--muted");
       for (let e = 0; e < mesh.nE; e++) tri(mesh.XY[e], null, st);
     } else if (view === "diss" && r.ub && r.ub.strain) {
-      let mx = 0; for (let e = 0; e < mesh.nE; e++) mx = Math.max(mx, r.ub.strain[e]);
-      for (let e = 0; e < mesh.nE; e++) tri(mesh.XY[e], ramp(Math.sqrt(r.ub.strain[e] / (mx || 1))));
+      const um = r.ub.mesh || mesh;
+      let mx = 0; for (let e = 0; e < um.nE; e++) mx = Math.max(mx, r.ub.strain[e]);
+      for (let e = 0; e < um.nE; e++) tri(um.XY[e], ramp(Math.sqrt(r.ub.strain[e] / (mx || 1))));
     } else if (view === "mech") {
       const g = r.velGrid, cw = g.W / g.nx, ch = g.H / g.ny;
       for (let j = 0; j < g.ny; j++) for (let i = 0; i < g.nx; i++) {
@@ -1397,9 +1514,9 @@ textarea.copytxt { width: 100%; height: 140px; font: 12px var(--font-mono); back
     const layerNote = !isModel && I.layers.length > 1 ? `<span>Dashed lines: layer boundaries.</span>` : "";
     const staleNote = !isModel && isStale() ? `<span style="color:var(--warn)">Showing the previous run; the inputs have changed since.</span>` : "";
     if (isModel) {
-      const symNote = I.hasSlope || (I.Hl || 0) !== 0 || (I.ec || 0) !== 0 ? "The full section is analysed because the load or ground is not symmetric." : "A half section is analysed with symmetry about the centreline; the full section is shown.";
+      const symNote = axiOn(I) ? "The circular footing is analysed as axisymmetric about its centreline; a diametral section is shown." : I.hasSlope || (I.Hl || 0) !== 0 || (I.ec || 0) !== 0 || (I.loadMode || "prop") !== "prop" ? "The full section is analysed because the load or ground is not symmetric." : "A half section is analysed with symmetry about the centreline; the full section is shown.";
       el.innerHTML = `<span>${symNote}</span>` + (I.hasWT ? `<span style="color:var(--water)">▽ water table</span>` : "");
-    } else if (view === "mech") el.innerHTML = staleNote + `<span>Soil velocity at collapse</span><span>still</span>${bar}<span>as fast as the footing</span><span>Black lines: slip surfaces, darker = larger jump.</span>` + layerNote + surNote;
+    } else if (view === "mech") el.innerHTML = staleNote + (result.axisym ? `<span style="color:var(--warn)">Plane-strain mechanism, used only to size the model; the circular footing's upper bound is the axisymmetric finite element solution (Dissipation tab).</span>` : "") + `<span>Soil velocity at collapse</span><span>still</span>${bar}<span>as fast as the footing</span><span>Black lines: slip surfaces, darker = larger jump.</span>` + layerNote + surNote;
     else if (view === "anim") el.innerHTML = staleNote + `<span>The load rises to the lower bound, then through the range where collapse must occur; the soil then moves along the upper-bound mechanism. Limit analysis treats soil as rigid until collapse, so nothing moves before then. Motion is exaggerated.</span><span>Grey lines were straight before collapse.</span>` + (I.D > 0 ? `<span>Soil above the footing base is a surcharge in the analysis; here it moves with the soil below it.</span>` : "");
     else if (view === "plastic") el.innerHTML = staleNote + `<span>How close the lower-bound stresses are to failure</span><span>below yield</span>${bar}<span>at yield</span><span>Arrows: soil velocity at collapse (upper bound), length ∝ speed.</span>` + layerNote + surNote;
     else if (view === "mesh") el.innerHTML = staleNote + `<span>${fmt(result.mesh.nE)} triangles${result.sym ? " per half" : ""}; fans at the footing edges, refined along the mechanism.</span>` + layerNote + surNote;

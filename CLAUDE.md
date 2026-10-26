@@ -35,9 +35,13 @@ b. Coordinates: y up, footing base at y = 0, footing centre at x = 0, tension po
 
 c. A symmetric half model is used only for a vertical, central load on level ground; otherwise the full section is solved.
 
-d. Lower bound (`lowerBound`): linear stress triangles, edge discontinuities, inscribed yield polygon (`p` sides), and an extension of the stress field beside and below the mesh. That extension is what makes the bound rigorous; never remove it or fit the domain tightly without it.
+d. Lower bound (`lowerBound`): linear stress triangles, edge discontinuities, inscribed yield surface, and an extension of the stress field beside and below the mesh. That extension is what makes the bound rigorous; never remove it or fit the domain tightly without it. The yield surface is a set of "cones" (`conesAt`: Mohr-Coulomb, tension cut-off, anisotropic undrained ellipse), each linearised by a `p`-sided polygon or, when `opts.nu` is set, the lifted Ben-Tal–Nemirovski polygon (`liftedCone`). Lower bounds must use the inscribed form (scale `cp`), upper bounds the circumscribed form or its LP dual (`addFlowUB`).
 
-e. Upper bounds: `upperBoundDLO` (discontinuity layout optimisation, rigid footing with a no-tension interface, `columnWeight` for self-weight work) and `upperBound` (finite element). `dloAdaptive` grows the domain until the mechanism is clear of the edges.
+e. Upper bounds: `upperBoundDLO` (discontinuity layout optimisation, rigid footing with a no-tension interface, `columnWeight` for self-weight work), `upperBound` (linear finite element with jumps) and `upperBoundQ` (6-node quadratic, continuous; `opts.feQuad`). `dloAdaptive` grows the domain until the mechanism is clear of the edges.
+
+f2. Loads are F = Ffix + alpha Fref with F = (V, H, M) (`footingFrame`, `footingPower`); every solver maximises or minimises alpha. `res.best` reports alpha and the collapse V, H, M. `analyse` runs `opts.adaptCycles` mesh cycles (indicators from the lower-bound row duals and upper-bound plastic strain) and keeps the best bound of each kind. `strengthFS` brackets the factor of safety on strength; each end must stay on its safe side.
+
+f3. Axisymmetric (circular footing, `model.axisym`): `axiLowerBound` (quadratic r-weighted stresses, Bernstein yield checks, full 3D Mohr-Coulomb via `axiConesAt`) and `axiUpperBound` (quadratic velocities with quadratic jumps, Bernstein multipliers). The plane-strain DLO only sizes the domain and is never reported as a bound for the circle.
 
 f. LP solves go through `runLP`. A bound is accepted only when HiGHS reports a feasible primal point (`primal_solution_status` = 2); otherwise it re-solves with crossover, then dual simplex. Do not report bounds from unconverged solves.
 
